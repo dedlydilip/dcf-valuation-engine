@@ -1,0 +1,96 @@
+# Base-case valuation assumptions.
+# Every value here is an INPUT and is rendered blue-font in the Excel output.
+# Scenario overrides live in scenarios.yaml and are deep-merged over this file.
+
+projection:
+  years: 5
+  # Fade profile. If a scalar is given it is held flat across all years.
+  revenue_growth: [0.08, 0.07, 0.06, 0.05, 0.04]
+  ebit_margin: null            # null => hold the last historical margin flat
+  tax_rate: 0.21
+  da_pct_revenue: null         # null => 3yr historical average
+  capex_pct_revenue: null      # null => 3yr historical average
+  nwc_pct_revenue: null        # null => 3yr historical average
+  mid_year_convention: true    # cash flows arrive mid-period, not at year end
+
+wacc:
+  risk_free_rate: 0.042
+  equity_risk_premium: 0.055
+  beta_override: null          # null => fetch from yfinance
+  cost_of_debt_override: null  # null => interest expense / average total debt
+  size_premium: 0.0
+  country_risk_premium: 0.0
+  capital_structure: current   # current | target
+  target_debt_weight: 0.20     # used only when capital_structure = target
+  # No floor is applied to cost of equity: a negative beta legitimately produces
+  # a cost of equity below the risk-free rate. Economically odd, mathematically valid.
+
+sbc:
+  # "expense": SBC stays in EBIT as a real operating cost; share count held at
+  #            current diluted + treasury-stock-method option overhang.
+  # "dilute" : SBC added back as non-cash; share count grows via DilutionTracker.
+  # These are two routes to the same answer. Doing both double-counts. Enforced
+  # by a validator in src/models/assumptions.py.
+  method: expense
+  forecast_method: pct_revenue    # pct_revenue | pct_sga | explicit
+  sbc_pct_revenue: null           # null => 3yr historical average
+  sbc_pct_sga: 0.15
+  explicit: null                  # list of absolute SBC values, one per year
+  option_overhang_shares: null    # treasury-stock-method net dilutive shares
+  buyback_offset_pct: 0.0         # share of SBC issuance repurchased (0 = none)
+
+terminal:
+  method: both                    # gordon | exit_multiple | both
+  perpetuity_growth: 0.025
+  exit_multiple_mode: dynamic     # static | dynamic
+  static_exit_multiple: 12.0
+  # Dynamic decay: the exit multiple compresses by `decay_turns_per_pp` turns of
+  # EV/EBITDA for every 1 PERCENTAGE POINT of revenue growth the company gives up
+  # relative to the peer median. Result is clamped to
+  # [mature_industry_multiple, peer_median_multiple].
+  decay_turns_per_pp: 2.0
+  mature_industry_multiple: 10.0
+  max_implied_growth: 0.035       # warn if the exit multiple implies g above this
+
+bridge:
+  minority_interest: null         # null => from balance sheet, else 0
+  preferred_equity: null
+  investments: null               # non-operating assets added to equity value
+
+comps:
+  peers: []                       # empty => auto-select by sector/industry
+  max_peers: 8
+  # Below this many screened peers the medians are reported but do not drive the
+  # terminal multiple. Two comparables is an anecdote, not a benchmark.
+  min_peers: 3
+  screen_outliers: true
+
+monte_carlo:
+  enabled: true
+  iterations: 10000
+  seed: 42
+  wacc_std: 0.010
+  terminal_growth_std: 0.005
+  ebit_margin_std: 0.020
+
+sensitivity:
+  wacc_deltas: [-0.02, -0.01, 0.0, 0.01, 0.02]
+  growth_deltas: [-0.010, -0.005, 0.0, 0.005, 0.010]
+  multiple_deltas: [-2.0, -1.0, 0.0, 1.0, 2.0]
+
+solver:
+  tolerance: 0.001      # 0.1% change in per-share value between iterations
+  max_iterations: 50
+
+quality:
+  min_history_years: 2
+  max_sbc_pct_revenue: 0.60       # above this, warn (not fail)
+  allow_unsuitable_sector: false  # force a valuation of a bank / insurer / asset manager
+
+# Companies that report and trade in different currencies -- any ADR. Toyota files in JPY
+# and trades in USD; unconverted that produced $79,467 per share against a $198 price and
+# a 0.43% WACC. The model refuses unless you convert or explicitly opt out.
+currency:
+  fx_rate: null                   # statement -> price currency (JPY->USD is ~0.0063)
+  auto_fx: false                  # fetch spot from Yahoo instead of supplying a rate
+  allow_mismatch: false           # proceed unconverted; units are yours to reconcile

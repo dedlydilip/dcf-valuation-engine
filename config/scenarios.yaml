@@ -1,0 +1,22 @@
+# Scenario overrides, deep-merged over assumptions.yaml.
+# Only the keys that differ from base need to appear here.
+
+base: {}
+
+bull:
+  projection:
+    revenue_growth: [0.12, 0.11, 0.10, 0.08, 0.06]
+  wacc:
+    equity_risk_premium: 0.048
+  terminal:
+    perpetuity_growth: 0.030
+    mature_industry_multiple: 12.0
+
+bear:
+  projection:
+    revenue_growth: [0.04, 0.03, 0.02, 0.02, 0.02]
+  wacc:
+    equity_risk_premium: 0.065
+  terminal:
+    perpetuity_growth: 0.015
+    mature_industry_multiple: 8.0

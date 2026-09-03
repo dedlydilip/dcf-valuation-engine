@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data — never commit live fetches or user caches
+data/raw/
+data/cache/
+
+# Generated models
+outputs/
+*.xlsx
+!tests/fixtures/*.xlsx
+
+# Private working notes
+CLAUDE.md
+.DS_Store
