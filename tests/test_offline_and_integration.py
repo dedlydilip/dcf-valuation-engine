@@ -130,21 +130,46 @@ class TestComps:
         assert pd.isna(multiples["pe"])
         assert multiples["ev_revenue"] > 0
 
-    def test_offline_comps_report_a_thin_peer_set(self):
-        """Only three fixtures exist, so the peer set is honestly labelled as thin."""
+    def test_offline_comps_report_a_thin_peer_set(self, tmp_path):
+        """Below `min_peers`, comps are reported but must not drive the terminal multiple.
+
+        The condition is built here rather than inherited from however many fixtures
+        happen to be committed. The original version asserted against the repository's
+        contents, so snapshotting more tickers broke it -- and the tempting "fix" would
+        have been to relax the assertion, which is how a real regression gets absorbed.
+        """
+        import shutil
+        from pathlib import Path
+
+        offline = tmp_path / "fixtures"
+        offline.mkdir()
+        for ticker in ("AAPL", "MSFT"):
+            shutil.copytree(Path("data/offline_sample") / ticker, offline / ticker)
+
         assumptions = DCFAssumptions.from_yaml()
-        target = YFinanceClient("AAPL", offline_mode=True).get_financials()
+        target = YFinanceClient(
+            "AAPL", offline_mode=True, offline_path=offline / "AAPL"
+        ).get_financials()
         result = CompsEngine(
-            "AAPL", assumptions, offline_mode=True, target_financials=target
+            "AAPL",
+            assumptions,
+            offline_mode=True,
+            offline_dir=offline,
+            target_financials=target,
         ).run()
 
-        assert result.peer_source == "offline_fixtures"
+        assert result.peer_count < assumptions.comps.min_peers
         assert not result.usable_for_terminal
-        assert result.terminal_inputs() == {}
+        assert result.terminal_inputs() == {}, (
+            "a peer set below the minimum must not feed the terminal multiple"
+        )
         assert any("below the minimum" in note for note in result.notes())
 
     def test_outlier_peer_is_screened_from_medians(self):
-        assumptions = DCFAssumptions.from_yaml()
+        """Peers named explicitly: TSLA is Consumer Cyclical and AAPL is Technology,
+        so the fallback maps will never pair them. Naming them directly tests the
+        screening itself, which is what this is about."""
+        assumptions = DCFAssumptions.model_validate({"comps": {"peers": ["MSFT", "TSLA"]}})
         target = YFinanceClient("AAPL", offline_mode=True).get_financials()
         result = CompsEngine(
             "AAPL", assumptions, offline_mode=True, target_financials=target

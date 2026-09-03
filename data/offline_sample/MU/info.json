@@ -1,0 +1,17 @@
+{
+  "beta": 2.222,
+  "marketCap": 1082139344896,
+  "sharesOutstanding": 1129393151,
+  "currentPrice": 958.16,
+  "sector": "Technology",
+  "industry": "Semiconductors",
+  "enterpriseValue": 1060144218112,
+  "totalDebt": 6376000000,
+  "totalCash": 26022000640,
+  "trailingPE": 21.64355,
+  "enterpriseToEbitda": 15.54,
+  "revenueGrowth": 3.457,
+  "financialCurrency": "USD",
+  "currency": "USD",
+  "longName": "Micron Technology, Inc."
+}

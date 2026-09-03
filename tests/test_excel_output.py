@@ -264,7 +264,16 @@ class TestContent:
         assert "revenue" in labels
         assert "ebit" in labels
 
-    def test_comps_notes_surface_a_thin_peer_set(self, workbook):
+    def test_comps_sheet_records_where_the_peers_came_from(self, workbook):
+        """Peer provenance has to reach the workbook, not just the console.
+
+        This used to assert the sheet said "below the minimum". That held only while
+        the repository shipped three fixtures and the offline peer set was too thin to
+        use; snapshotting the full peer universe gave AAPL seven real Technology peers
+        and the note correctly disappeared. Provenance is the durable property -- the
+        module's own docstring argues a peer set is a judgement call and its source
+        must be recorded rather than hidden.
+        """
         book, _, _ = workbook
         sheet = book["Comps"]
         text = " ".join(
@@ -273,7 +282,8 @@ class TestContent:
             for c in row
             if c.value
         )
-        assert "below the minimum" in text
+        assert "Peer set source:" in text
+        assert "sector_map" in text or "industry_map" in text or "config" in text
 
     def test_football_field_has_a_chart(self, workbook):
         book, _, _ = workbook

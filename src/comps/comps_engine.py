@@ -55,6 +55,19 @@ SECTOR_PEERS: dict[str, list[str]] = {
     "Consumer Defensive": ["PG", "KO", "PEP", "COST", "WMT"],
 }
 
+def peer_universe() -> tuple[str, ...]:
+    """Every ticker the fallback maps can request, sorted.
+
+    The set worth having offline fixtures for. Derived from the maps rather than
+    listed a second time, so adding a bucket cannot silently leave its tickers
+    unsnapshotted -- `src/fetcher/snapshot.py` reads this.
+    """
+    universe: set[str] = set()
+    for group in (*INDUSTRY_PEERS.values(), *SECTOR_PEERS.values()):
+        universe.update(group)
+    return tuple(sorted(universe))
+
+
 MULTIPLE_COLUMNS = ["ev_ebitda", "ev_ebit", "ev_revenue", "pe"]
 
 # Sanity bands for trading multiples. A company at 114x EV/EBITDA is being priced on
@@ -170,28 +183,44 @@ class CompsEngine:
             peers = [p for p in configured if p != self.target]
             return peers[: self.assumptions.comps.max_peers], "config"
 
-        if self.offline_mode:
-            # Only tickers with committed fixtures can be priced without a network.
-            available = sorted(
-                p.name for p in self.offline_dir.glob("*") if p.is_dir() and p.name != self.target
-            )
-            return available[: self.assumptions.comps.max_peers], "offline_fixtures"
-
         info = (self.target_financials.info or {}) if self.target_financials is not None else {}
         industry = info.get("industry")
         sector = info.get("sector")
+        limit = self.assumptions.comps.max_peers
 
         # Industry first: it is the finer-grained field, and the sector-level bucket
         # would otherwise mix a cyclical chip maker into the same peer set as a
         # software platform because Yahoo files both under "Technology".
         if industry and industry in INDUSTRY_PEERS:
-            candidates = INDUSTRY_PEERS[industry]
-            peers = [p for p in candidates if p != self.target]
-            return peers[: self.assumptions.comps.max_peers], f"industry_map:{industry}"
+            candidates, source = INDUSTRY_PEERS[industry], f"industry_map:{industry}"
+        elif sector in SECTOR_PEERS:
+            candidates, source = SECTOR_PEERS[sector], f"sector_map:{sector}"
+        else:
+            candidates, source = [], f"sector_map:{sector or 'unknown'}"
 
-        candidates = SECTOR_PEERS.get(sector or "", [])
         peers = [p for p in candidates if p != self.target]
-        return peers[: self.assumptions.comps.max_peers], f"sector_map:{sector or 'unknown'}"
+
+        if self.offline_mode:
+            # Only tickers with committed fixtures can be priced without a network, so
+            # the map is intersected with what is actually on disk.
+            #
+            # This used to be a bare alphabetical glob of the fixture directory. With
+            # three fixtures that was harmless, because too few peers survived to clear
+            # `min_peers` and the comps were correctly reported as too thin to use. Once
+            # the whole peer universe was snapshotted it became actively wrong: Apple's
+            # peers would have been ABBV, ADBE, AMAT, AMD, AMZN, ASML, AVGO, BA -- and
+            # with eight of them it cleared the minimum, so an alphabetical accident
+            # would have driven the terminal multiple under a confident heading.
+            on_disk = {
+                p.name for p in self.offline_dir.glob("*") if p.is_dir() and p.name != self.target
+            }
+            if peers:
+                return [p for p in peers if p in on_disk][:limit], f"offline:{source}"
+            # No industry or sector to go on -- synthetic financials carry no info
+            # payload at all. Fall back to whatever exists, as before.
+            return sorted(on_disk)[:limit], "offline_fixtures"
+
+        return peers[:limit], source
 
     # -------------------------------------------------------------------- build
 

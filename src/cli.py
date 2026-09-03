@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import warnings
 import webbrowser
 from pathlib import Path
@@ -31,7 +32,7 @@ from src.dcf.reverse_dcf import ReverseDCFResult, solve_reverse_dcf
 from src.dcf.scenario_blender import blend_scenarios
 from src.dcf.sensitivity import football_field, wacc_vs_growth
 from src.excel.builder import build_excel_model
-from src.fetcher.snapshot import SAMPLE_TICKERS, snapshot_ticker
+from src.fetcher.snapshot import SAMPLE_TICKERS, peer_universe_tickers, snapshot_ticker
 from src.fetcher.yfinance_client import DEFAULT_OFFLINE_DIR, YFinanceClient
 from src.models.assumptions import DCFAssumptions
 from src.models.errors import ValuationError
@@ -658,20 +659,98 @@ def dashboard(
 
 
 @cli.command()
-@click.option("--ticker", "-t", default=None, help="Ticker to snapshot. Omit for the sample set.")
+@click.option("--ticker", "-t", default=None, help="One ticker to snapshot.")
+@click.option("--tickers", default=None, help="Comma-separated tickers to snapshot.")
+@click.option(
+    "--peer-universe",
+    is_flag=True,
+    help="Snapshot every ticker the comps fallback maps can request.",
+)
+@click.option(
+    "--delay",
+    type=float,
+    default=1.5,
+    show_default=True,
+    help="Seconds between fetches. Yahoo is an unofficial endpoint and rate-limits.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite fixtures that already exist. Off by default: a refresh moves market "
+    "data, and the committed fixtures are what the pinned numbers reproduce from.",
+)
 @click.option(
     "--offline-dir", default=str(DEFAULT_OFFLINE_DIR), type=click.Path(), show_default=True
 )
-def snapshot(ticker: str | None, offline_dir: str) -> None:
-    """Fetch live data and write it as committed offline fixtures."""
-    targets = [ticker.upper().strip()] if ticker else list(SAMPLE_TICKERS)
-    for name in targets:
-        click.echo(f"Fetching {name} ...")
-        try:
-            path = snapshot_ticker(name, offline_dir)
-            click.secho(f"  wrote {path}", fg="green")
-        except Exception as exc:
-            click.secho(f"  failed: {exc}", fg="red")
+def snapshot(
+    ticker: str | None,
+    tickers: str | None,
+    peer_universe: bool,
+    delay: float,
+    force: bool,
+    offline_dir: str,
+) -> None:
+    """Fetch live data and write it as committed offline fixtures.
+
+    Existing fixtures are left alone unless `--force` is passed. Re-fetching is not
+    free: `--peer-universe` includes AAPL, MSFT and TSLA, and refreshing those moved
+    Apple's market capitalisation 2.7%, which shifted the WACC capital-structure
+    weights and the reported value per share -- invalidating figures pinned across the
+    README, the changelog, three test files and the Excel cross-check. Refreshing a
+    reference fixture should be a decision, not a side effect.
+    """
+    if peer_universe:
+        targets = list(peer_universe_tickers())
+    elif tickers:
+        targets = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    elif ticker:
+        targets = [ticker.upper().strip()]
+    else:
+        targets = list(SAMPLE_TICKERS)
+
+    written: list[str] = []
+    failed: dict[str, str] = {}
+    skipped: list[str] = []
+
+    if not force:
+        existing = {
+            p.name for p in Path(offline_dir).glob("*") if p.is_dir()
+        } if Path(offline_dir).exists() else set()
+        skipped = [t for t in targets if t in existing]
+        targets = [t for t in targets if t not in existing]
+        if skipped:
+            click.secho(
+                f"Skipping {len(skipped)} existing fixture(s); pass --force to refresh: "
+                f"{', '.join(skipped)}",
+                fg="yellow",
+            )
+
+    for index, name in enumerate(targets, start=1):
+        click.echo(f"[{index}/{len(targets)}] Fetching {name} ...")
+        # One retry, because a single throttled request should not cost a fixture.
+        # A half-fetched set is worse than a short one: the gaps are invisible later.
+        for attempt in (1, 2):
+            try:
+                path = snapshot_ticker(name, offline_dir)
+                click.secho(f"  wrote {path}", fg="green")
+                written.append(name)
+                break
+            except Exception as exc:
+                if attempt == 1:
+                    click.secho(f"  retrying after error: {exc}", fg="yellow")
+                    time.sleep(delay * 3)
+                else:
+                    click.secho(f"  failed: {exc}", fg="red")
+                    failed[name] = str(exc)
+        if index < len(targets):
+            time.sleep(delay)
+
+    click.echo()
+    click.secho(f"Wrote {len(written)} fixture(s).", fg="green", bold=True)
+    if failed:
+        click.secho(f"{len(failed)} failed and were NOT written:", fg="red", bold=True)
+        for name, reason in failed.items():
+            click.secho(f"  {name}: {reason[:100]}", fg="red")
 
 
 # ------------------------------------------------------------------- printing

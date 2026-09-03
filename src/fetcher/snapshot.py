@@ -19,7 +19,23 @@ from src.fetcher.yfinance_client import (
     write_statement_json,
 )
 
-SAMPLE_TICKERS = ("AAPL", "MSFT", "TSLA")
+# The three the repository was built around. Named separately because the README's
+# headline numbers and the Excel cross-check are pinned to exactly these.
+CORE_TICKERS = ("AAPL", "MSFT", "TSLA")
+
+# What `snapshot` fetches when no ticker is named.
+SAMPLE_TICKERS = CORE_TICKERS
+
+
+def peer_universe_tickers() -> tuple[str, ...]:
+    """Every ticker the comps fallback maps can request.
+
+    Imported inside the function: `comps_engine` imports this module's siblings, and
+    pulling it in at module scope would risk closing that loop.
+    """
+    from src.comps.comps_engine import peer_universe
+
+    return peer_universe()
 
 
 def snapshot_ticker(ticker: str, out_dir: Path | str = DEFAULT_OFFLINE_DIR) -> Path:

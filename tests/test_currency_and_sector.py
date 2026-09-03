@@ -183,13 +183,23 @@ class TestCompsExcludeMismatchedPeers:
     absurd share price, so nothing looks wrong at all.
     """
 
+    # SAP and TSM are named explicitly rather than left to the fallback maps. Neither
+    # is in the Technology sector bucket, so once offline peer selection started using
+    # the maps instead of an alphabetical glob they stopped being selected for AAPL at
+    # all. Naming them is what still routes them through the currency guard, which is
+    # the thing under test.
+    ADR_PEERS = {"comps": {"peers": ["MSFT", "SAP", "TSM"]}}
+
     def test_mismatched_peers_are_excluded_with_a_reason(self):
         from src.comps.comps_engine import CompsEngine
 
         warnings.simplefilter("ignore")
         target = YFinanceClient("AAPL", offline_mode=True).get_financials()
         result = CompsEngine(
-            "AAPL", DCFAssumptions.from_yaml(), offline_mode=True, target_financials=target
+            "AAPL",
+            DCFAssumptions.model_validate(self.ADR_PEERS),
+            offline_mode=True,
+            target_financials=target,
         ).run()
 
         assert set(result.skipped) >= {"SAP", "TSM"}
@@ -204,7 +214,10 @@ class TestCompsExcludeMismatchedPeers:
         warnings.simplefilter("ignore")
         target = YFinanceClient("AAPL", offline_mode=True).get_financials()
         result = CompsEngine(
-            "AAPL", DCFAssumptions.from_yaml(), offline_mode=True, target_financials=target
+            "AAPL",
+            DCFAssumptions.model_validate(self.ADR_PEERS),
+            offline_mode=True,
+            target_financials=target,
         ).run()
 
         multiples = result.table["ev_ebitda"].dropna()

@@ -1,0 +1,17 @@
+{
+  "beta": 0.123,
+  "marketCap": 163045523456,
+  "sharesOutstanding": 1201337479,
+  "currentPrice": 135.72,
+  "sector": "Energy",
+  "industry": "Oil & Gas E&P",
+  "enterpriseValue": 180421509120,
+  "totalDebt": 23289999360,
+  "totalCash": 7692000256,
+  "trailingPE": 17.952381,
+  "enterpriseToEbitda": 6.737,
+  "revenueGrowth": 0.355,
+  "financialCurrency": "USD",
+  "currency": "USD",
+  "longName": "ConocoPhillips"
+}

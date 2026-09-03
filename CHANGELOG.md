@@ -3,6 +3,79 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## Full peer universe offline — September 2026
+
+Offline mode had 5 fixtures. It now has 56: every ticker `SECTOR_PEERS` and
+`INDUSTRY_PEERS` can request, which is the exact set the comps engine falls back to when
+config names no peers. 393KB -> 4.1MB. All 56 fetched cleanly, none failed.
+
+The payoff is that offline comps became real. Micron now values with no network at all
+against NVDA, AMD, TSM, QCOM, INTC, AVGO and TXN, and the peer set is usable rather than
+reported as too thin to drive anything.
+
+### Fixed — offline peers were chosen alphabetically
+
+This is why the snapshot was not just a download. `resolve_peers` picked offline peers by
+globbing the fixture directory and taking the first `max_peers` **alphabetically**:
+
+```python
+available = sorted(p.name for p in self.offline_dir.glob("*") if ...)
+return available[: max_peers], "offline_fixtures"
+```
+
+With five fixtures that was harmless — too few survived to clear `min_peers`, so the comps
+were honestly labelled thin and the terminal multiple fell back to the stated static
+assumption. With 56 it would have become actively wrong: Apple's peers would have been
+**ABBV, ADBE, AMAT, AMD, AMZN, ASML, AVGO, BA** — AbbVie, Adobe, Applied Materials, Boeing
+— and eight of them clears the minimum, so an alphabetical accident would have driven the
+terminal multiple under a confident heading.
+
+Offline selection now runs the same industry-then-sector resolution as live and intersects
+it with what is on disk, reporting the path taken (`offline:industry_map:Semiconductors`)
+rather than a bare `offline_fixtures`. The alphabetical glob survives only as the fallback
+for targets with no industry or sector, which is what synthetic test financials are.
+
+### Fixed — snapshotting silently invalidated the pinned reference numbers
+
+`--peer-universe` includes AAPL, MSFT and TSLA, so the first run refreshed the three
+fixtures every pinned figure reproduces from. Only market data changed — the statements
+were identical — but Apple's market capitalisation moved 2.7%, which shifts the WACC
+capital-structure weights:
+
+```
+AAPL  $120.08 -> $120.02      MSFT  $188.99 -> $189.01
+```
+
+Small, correct, and quietly invalidating the README, this changelog, three test files and
+the Excel cross-check. TSM's income statement had changed too, which would have broken the
+pinned conversion test. The reference fixtures were restored, and `snapshot` now **skips
+existing fixtures unless `--force`** — refreshing a reference should be a decision, not a
+side effect of asking for something else.
+
+### Tests
+
+Three tests asserted against however many fixtures the repository happened to contain, so
+adding fixtures broke them. Each now builds the condition it tests:
+
+- `test_offline_comps_report_a_thin_peer_set` copies two fixtures into `tmp_path`, so it
+  tests the below-minimum behaviour rather than the repository's contents.
+- `test_outlier_peer_is_screened_from_medians` and the ADR currency tests name their peers
+  explicitly. TSLA is Consumer Cyclical and SAP is not in the Technology bucket, so the
+  maps will never pair either with AAPL — naming them is what still exercises the screen
+  and the currency guard.
+- The Excel comps test asserts peer **provenance** reaches the sheet, which is durable,
+  instead of a "below the minimum" note that correctly disappeared.
+
+### CLI
+
+`snapshot` takes `--tickers` (comma-separated), `--peer-universe`, `--delay` (default 1.5s,
+because Yahoo throttles) and `--force`. One retry per ticker: a single throttled request
+should not cost a fixture, and a half-fetched set is worse than a short one because the
+gaps are invisible afterwards.
+
+289 tests, ruff clean, Excel cross-check 324 comparisons. Headline numbers unmoved:
+AAPL $120.08, MSFT $188.99, TSLA $8.86.
+
 ## Dashboard made genuinely standalone — September 2026
 
 The dashboard called itself a "standalone report" while fetching 407KB of Tailwind from
