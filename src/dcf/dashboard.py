@@ -25,13 +25,163 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DCF & Valuation Engine Dashboard</title>
-  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
   <style>
     body {{
       background-color: #0b0f19;
       color: #f1f5f9;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }}
+    /* ------------------------------------------------------------------
+       Self-contained utility CSS.
+
+       This page used to pull Tailwind from
+       https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js -- a 407KB
+       download from a dev-channel path on infrastructure we do not control. It
+       worked, but it made a "standalone" report depend on a network fetch, which
+       contradicts the thing this project promises everywhere else: that it runs
+       with no network at all. Open the old dashboard on a plane, or once that URL
+       is retired, and you get unstyled HTML and no warning.
+
+       These rules cover exactly the utility classes this page uses. Nothing here
+       is speculative -- `tests/test_dashboard.py` renders the page and fails if
+       the markup ever uses a class this stylesheet does not define.
+       ------------------------------------------------------------------ */
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    body {{ margin: 0; }}
+
+    /* layout */
+    .block {{ display: block; }}
+    .flex {{ display: flex; }}
+    .grid {{ display: grid; }}
+    .flex-col {{ flex-direction: column; }}
+    .items-center {{ align-items: center; }}
+    .items-start {{ align-items: flex-start; }}
+    .items-baseline {{ align-items: baseline; }}
+    .justify-between {{ justify-content: space-between; }}
+    .grid-cols-1 {{ grid-template-columns: repeat(1, minmax(0, 1fr)); }}
+    .grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    .grid-cols-5 {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
+    .w-full {{ width: 100%; }}
+    .w-3 {{ width: 0.75rem; }}
+    .h-3 {{ height: 0.75rem; }}
+    .h-1\.5 {{ height: 0.375rem; }}
+    .max-w-6xl {{ max-width: 72rem; }}
+    .min-h-screen {{ min-height: 100vh; }}
+    .mx-auto {{ margin-left: auto; margin-right: auto; }}
+    .overflow-hidden {{ overflow: hidden; }}
+    .overflow-x-auto {{ overflow-x: auto; }}
+
+    /* spacing */
+    .p-2 {{ padding: 0.5rem; }}
+    .p-2\.5 {{ padding: 0.625rem; }}
+    .p-3 {{ padding: 0.75rem; }}
+    .p-3\.5 {{ padding: 0.875rem; }}
+    .p-4 {{ padding: 1rem; }}
+    .p-5 {{ padding: 1.25rem; }}
+    .p-6 {{ padding: 1.5rem; }}
+    .px-2 {{ padding-left: 0.5rem; padding-right: 0.5rem; }}
+    .px-2\.5 {{ padding-left: 0.625rem; padding-right: 0.625rem; }}
+    .px-3 {{ padding-left: 0.75rem; padding-right: 0.75rem; }}
+    .px-4 {{ padding-left: 1rem; padding-right: 1rem; }}
+    .py-1 {{ padding-top: 0.25rem; padding-bottom: 0.25rem; }}
+    .py-1\.5 {{ padding-top: 0.375rem; padding-bottom: 0.375rem; }}
+    .py-3 {{ padding-top: 0.75rem; padding-bottom: 0.75rem; }}
+    .py-3\.5 {{ padding-top: 0.875rem; padding-bottom: 0.875rem; }}
+    .pt-1 {{ padding-top: 0.25rem; }}
+    .pt-2 {{ padding-top: 0.5rem; }}
+    .pt-3 {{ padding-top: 0.75rem; }}
+    .mb-1 {{ margin-bottom: 0.25rem; }}
+    .mt-1 {{ margin-top: 0.25rem; }}
+    .mt-0\.5 {{ margin-top: 0.125rem; }}
+    .gap-1\.5 {{ gap: 0.375rem; }}
+    .gap-2 {{ gap: 0.5rem; }}
+    .gap-2\.5 {{ gap: 0.625rem; }}
+    .gap-3 {{ gap: 0.75rem; }}
+    .gap-4 {{ gap: 1rem; }}
+    .gap-6 {{ gap: 1.5rem; }}
+    .space-y-1 > * + * {{ margin-top: 0.25rem; }}
+    .space-y-2 > * + * {{ margin-top: 0.5rem; }}
+    .space-y-3 > * + * {{ margin-top: 0.75rem; }}
+    .space-y-4 > * + * {{ margin-top: 1rem; }}
+    .space-y-6 > * + * {{ margin-top: 1.5rem; }}
+
+    /* borders */
+    .border {{ border: 1px solid #1e293b; }}
+    .border-t {{ border-top: 1px solid #1e293b; }}
+    .border-b {{ border-bottom: 1px solid #1e293b; }}
+    .border-slate-800 {{ border-color: #1e293b; }}
+    .divide-y > * + * {{ border-top: 1px solid #1e293b; }}
+    .divide-slate-800\/80 > * + * {{ border-top-color: rgba(30, 41, 59, 0.8); }}
+    .rounded {{ border-radius: 0.25rem; }}
+    .rounded-lg {{ border-radius: 0.5rem; }}
+    .rounded-xl {{ border-radius: 0.75rem; }}
+    .rounded-2xl {{ border-radius: 1rem; }}
+    .rounded-full {{ border-radius: 9999px; }}
+
+    /* colour */
+    .bg-slate-900 {{ background-color: #0f172a; }}
+    .bg-slate-950 {{ background-color: #020617; }}
+    .bg-emerald-500 {{ background-color: #10b981; }}
+    /* Applied by JS to the selected company button. Missing these left the active
+       button with the browser's default white background and near-white text --
+       invisible. Static-markup scanning alone does not find them. */
+    .bg-blue-600 {{ background-color: #2563eb; }}
+    .border-blue-500 {{ border-color: #3b82f6; }}
+    .shadow-lg {{ box-shadow: 0 10px 15px -3px rgba(0,0,0,0.35), 0 4px 6px -4px rgba(0,0,0,0.35); }}
+    .hover\\:text-white:hover {{ color: #ffffff; }}
+    .text-white {{ color: #ffffff; }}
+    .text-slate-400 {{ color: #94a3b8; }}
+    .text-emerald-400 {{ color: #34d399; }}
+    .text-red-400 {{ color: #f87171; }}
+    .text-blue-400 {{ color: #60a5fa; }}
+    .text-amber-400 {{ color: #fbbf24; }}
+
+    /* type */
+    .text-\[10px\] {{ font-size: 10px; line-height: 1.4; }}
+    .text-\[11px\] {{ font-size: 11px; line-height: 1.4; }}
+    .text-xs {{ font-size: 0.75rem; line-height: 1rem; }}
+    .text-sm {{ font-size: 0.875rem; line-height: 1.25rem; }}
+    .text-base {{ font-size: 1rem; line-height: 1.5rem; }}
+    .text-lg {{ font-size: 1.125rem; line-height: 1.75rem; }}
+    .text-xl {{ font-size: 1.25rem; line-height: 1.75rem; }}
+    .text-2xl {{ font-size: 1.5rem; line-height: 2rem; }}
+    .font-semibold {{ font-weight: 600; }}
+    .font-bold {{ font-weight: 700; }}
+    .font-mono {{ font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }}
+    .text-left {{ text-align: left; }}
+    .text-center {{ text-align: center; }}
+    .uppercase {{ text-transform: uppercase; }}
+    .tracking-tight {{ letter-spacing: -0.015em; }}
+    .tracking-wider {{ letter-spacing: 0.05em; }}
+    .antialiased {{ -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }}
+
+    /* interaction */
+    .cursor-pointer {{ cursor: pointer; }}
+    .appearance-none {{ appearance: none; -webkit-appearance: none; }}
+    .shadow-xl {{ box-shadow: 0 20px 25px -5px rgba(0,0,0,0.35), 0 8px 10px -6px rgba(0,0,0,0.35); }}
+    .transition-all {{ transition: all 0.15s ease-in-out; }}
+    .transition-colors {{ transition: background-color 0.15s ease-in-out, color 0.15s ease-in-out, border-color 0.15s ease-in-out; }}
+    .hover\:bg-slate-950:hover {{ background-color: #020617; }}
+    .hover\:underline:hover {{ text-decoration: underline; }}
+
+    @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.45; }} }}
+    .animate-pulse {{ animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }}
+
+    /* responsive: sm = 640px, lg = 1024px */
+    @media (min-width: 640px) {{
+      .sm\:p-8 {{ padding: 2rem; }}
+      .sm\:flex-row {{ flex-direction: row; }}
+      .sm\:items-center {{ align-items: center; }}
+      .sm\:text-sm {{ font-size: 0.875rem; line-height: 1.25rem; }}
+      .sm\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .sm\:grid-cols-3 {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+    }}
+    @media (min-width: 1024px) {{
+      .lg\:grid-cols-3 {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+      .lg\:col-span-1 {{ grid-column: span 1 / span 1; }}
+      .lg\:col-span-2 {{ grid-column: span 2 / span 2; }}
+    }}
+
     .badge {{
       display: inline-flex;
       align-items: center;
@@ -59,7 +209,7 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
         <p class="text-slate-400 text-sm mt-1">Multi-lens valuation: Intrinsic DCF, Economic Moat, Reverse Expectations, and Margin of Safety.</p>
       </div>
       <div class="flex items-center gap-2 text-xs text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 font-mono">
-        <span>Audited Engine • 261 Tests • Standalone Report</span>
+        <span>Audited Engine • Offline • Standalone Report</span>
       </div>
     </div>
 

@@ -3,6 +3,49 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## Dashboard made genuinely standalone — September 2026
+
+The dashboard called itself a "standalone report" while fetching 407KB of Tailwind from
+`https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js` — a dev-channel path on
+infrastructure this project does not control. It worked when checked (HTTP 200), which is
+the problem: it fails silently and completely the moment that URL is retired or the reader
+is offline, leaving unstyled HTML and no warning. That also flatly contradicted the
+project's headline promise that everything runs with no network at all.
+
+The stylesheet is now inlined: 112 utility classes hand-written, 6.6KB, replacing a 407KB
+download. The generated page makes **zero external requests**.
+
+### Also fixed, found by actually looking at the rendered page
+
+Four classes are applied by JavaScript rather than appearing in a static `class`
+attribute, and the first pass missed them because the extraction regex stopped at the end
+of the line while the assignment spans a `+` concatenation:
+
+```
+btn.className = "py-1.5 px-2 rounded-lg ... " +
+  (ticker === selectedTicker
+    ? "bg-blue-600 text-white border-blue-500 shadow-lg"   <- these
+```
+
+With no rule for `bg-blue-600`, the selected-company button rendered with the browser's
+default white background and near-white text — invisible. Caught by screenshotting the
+page, not by the test, which is the honest account of it.
+
+### Tests
+
+`tests/test_dashboard.py` — the module was the largest in the repository with no tests at
+all (438 lines). It computes nothing, so it cannot produce a wrong valuation, but it could
+and did lose styling silently. The suite now asserts no remote assets are referenced, that
+every class used has a matching rule, **and that the same holds for classes assigned in
+JavaScript**. Both halves are mutation-tested: deleting `.rounded-2xl` or `.bg-blue-600`
+fails the suite.
+
+Also removed a hardcoded "261 Tests" badge from the page, which had already drifted (the
+suite was at 281) and would keep drifting. The README has been bitten by exactly this
+before, so the count is simply gone rather than updated.
+
+289 tests, ruff clean. Headline numbers unmoved: AAPL $120.08, MSFT $188.99, TSLA $8.86.
+
 ## Audit of the parallel work — September 2026
 
 Prompted by "recheck if the work is genuine". Verifying live rather than citing pass
