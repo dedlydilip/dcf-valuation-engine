@@ -3,6 +3,78 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## External workbook review — September 2026
+
+An outside review of the generated Excel found eight defects. Six were real, one was
+stale, one misdiagnosed its own mechanism. The first is the worst, and it is a defect in
+the verification as much as in the model.
+
+### Fixed — the exit-multiple sensitivity contradicted the DCF sheet
+
+Both sensitivity grids discounted terminal value at the mid-year period (4.5 years under
+a 5-year forecast). That is correct for Gordon -- a perpetuity of mid-year flows really
+does start half a year early -- and wrong for an exit multiple, which is a sale price at
+a point in time and is discounted the full 5.0. The DCF sheet already branched correctly;
+the grids did not:
+
+```
+exit grid at 12x / 10.025%:  $136.50      DCF sheet, same assumptions:  $131.66
+```
+
+Every cell of that grid was high by (1+w)^0.5. After the fix the grid reads $131.66 at
+12x -- the DCF sheet's own number.
+
+**The cross-check did not catch this, and could not have.** `build_crosscheck.py`
+computed its expected grid using the same exponent copied from the workbook formula, so
+Excel and Python agreed to 0.000% and the run reported "324 comparisons, Excel agrees
+with Python on every case". Two implementations of one error agree with each other. That
+was reported here and in the README as evidence of correctness; it was evidence of
+consistency. The Python side now derives the exponent from the convention instead of
+restating the sheet, and `tests/test_excel_output.py` compares the grid's discounting
+against the DCF sheet directly. Reverting the exponent now fails that test.
+
+### Fixed — sensitivity axes were frozen at build time
+
+The WACC and growth axis labels were written as literal values, so changing beta or the
+ERP in the workbook left the grid no longer centred on the base case while still
+presenting itself as bracketing it. They are formulas off the live WACC and growth cells
+now.
+
+### Fixed — the Summary note was false
+
+It read "Every figure links to the DCF sheet. Blue cells on Inputs are the only hardcoded
+numbers in the workbook." Summary's comps, historicals and SBC memo blocks are written as
+values. They tie out on build and desync silently on the first edit. The note now says
+which blocks are static and that a rebuild is required. The WACC sheet's equivalent note
+was true of that sheet and now says so explicitly rather than implying it of the file.
+
+### Fixed — FootballField labelled the base case as a "Midpoint"
+
+The column carries `base_result.value_per_share`, not the midpoint of the range: $120.08
+against an 88.22-193.75 span whose actual midpoint is 140.98. Renamed to "Base case".
+
+### Fixed — cost of debt below the risk-free rate now says so
+
+3.83% against a 4.20% risk-free rate, because the shipped Apple fixture reports no
+interest expense for FY2024-25 and the model reaches back to FY2023, pairing that with
+current average debt.
+
+Deliberately **not** floored at rf plus a spread, as the review suggested. A company that
+termed out at 2% coupons in 2021 genuinely does pay less than today's Treasury, and
+clamping would overwrite a fact about the balance sheet with an assumption. The vintage
+mismatch is the real defect, so it warns and names both possible causes.
+
+### Not defects
+
+- **Comps peer count.** The review saw "screened peer count 1" with two-name medians
+  including TSLA. That workbook predates the peer-universe snapshot; AAPL now draws seven
+  Technology peers and nothing is screened.
+- **"The reverse DCF flexes growth alone while holding margin fixed."** It solves for
+  margin too -- `reverse_dcf.py` patches `projection.ebit_margin` independently. The
+  criticism underneath is fair (single-lever solves produce absurd figures, and a 28.9%
+  implied CAGR is a symptom of the method, not of the company) but the stated mechanism
+  is not what the code does.
+
 ## Full peer universe offline — September 2026
 
 Offline mode had 5 fixtures. It now has 56: every ticker `SECTOR_PEERS` and

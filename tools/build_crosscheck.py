@@ -93,13 +93,21 @@ def sensitivity_expectations(result) -> dict:
     multiples = [max(base_multiple + d, 0.5) for d in cfg.multiple_deltas]
     term_ebitda = terminal_year_ebitda(result.projection)
 
+    # Full period, not the mid-year one. An exit multiple is a sale price at a point in
+    # time. Both this and the workbook formula previously used `last_exp` (4.5 under a
+    # 5-year forecast), so the cross-check compared Excel against a Python
+    # reimplementation of the same error, agreed to 0.000%, and reported 324 passing
+    # comparisons as evidence of correctness. It was evidence of consistency. The
+    # exponent here is derived from the convention rather than copied from the sheet.
+    exit_exponent = float(len(fcf))
+
     multiple_grid = []
     for wacc in waccs:
         multiple_grid.append(
             [
                 (
                     pv_explicit(wacc)
-                    + term_ebitda * m / (1.0 + wacc) ** last_exp
+                    + term_ebitda * m / (1.0 + wacc) ** exit_exponent
                     - net_bridge
                 )
                 / shares

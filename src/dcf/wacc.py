@@ -19,6 +19,7 @@ Two conventions worth defending out loud:
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any
 
 import pandas as pd
@@ -217,7 +218,31 @@ class WACCCalculator:
         implied = interest / average_debt if average_debt > 0 else interest / debt
         if not math.isfinite(implied):
             return self.risk_free_rate
-        return min(max(implied, COST_OF_DEBT_FLOOR), COST_OF_DEBT_CEILING)
+        rate = min(max(implied, COST_OF_DEBT_FLOOR), COST_OF_DEBT_CEILING)
+
+        # A cost of debt below the risk-free rate is not automatically wrong: a company
+        # that termed out at 2% coupons in 2021 really does pay less than today's
+        # Treasury. It is deliberately NOT clamped to rf plus a spread, because that
+        # would overwrite a real fact about the balance sheet with an assumption.
+        #
+        # What it does reliably indicate is worth saying out loud, because the usual
+        # cause is a vintage mismatch: when the latest period reports no interest
+        # expense the model reaches back a year, pairing an older interest figure with
+        # a current average debt balance. On the shipped Apple fixture that is exactly
+        # what happens -- FY2023 interest against FY2024-25 average debt, 3.83% against
+        # a 4.20% risk-free rate.
+        if rate < self.risk_free_rate:
+            warnings.warn(
+                f"Cost of debt ({rate:.2%}) is below the risk-free rate "
+                f"({self.risk_free_rate:.2%}). Legacy low-coupon debt can genuinely do "
+                f"this, but check the vintages first: if interest expense is missing "
+                f"from the latest period the model pairs an earlier year's interest "
+                f"with current debt, which understates the rate. Set "
+                f"wacc.cost_of_debt_override to state it explicitly.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return rate
 
     def _average_debt(self) -> float:
         """Average the last two balance-sheet debt figures when history allows.

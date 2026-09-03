@@ -401,7 +401,7 @@ class ExcelModelBuilder:
         r = self.refs
 
         cur.title("Weighted Average Cost of Capital", width=4)
-        cur.note("Every figure below is a formula driven from the Inputs sheet.")
+        cur.note("Every figure on this sheet is a formula driven from Inputs. That is true here; it is not true of Summary, Comps or Historicals.")
         cur.skip()
 
         cur.section("Cost of equity (CAPM)", width=4)
@@ -814,6 +814,9 @@ class ExcelModelBuilder:
         self.refs["fcf_row"] = str(core_row)
         self.refs["adj_row"] = str(adj_row)
         self.refs["exp_row"] = str(exp_row)
+        # Full-year index, needed by the exit-multiple sensitivity grid: a sale price
+        # at a point in time is discounted the whole period, not the mid-year one.
+        self.refs["idx_row"] = str(idx_row)
         self.refs["first_letter"] = get_column_letter(first)
         self.refs["last_letter"] = get_column_letter(last)
         ws.freeze_panes = f"{get_column_letter(base_col)}{header_row + 1}"
@@ -866,8 +869,16 @@ class ExcelModelBuilder:
         header_row = cur.row
         ws.cell(row=header_row, column=1, value="WACC \\ growth").font = S.HEADER_FONT
         ws.cell(row=header_row, column=1).fill = S.HEADER_FILL
-        for j, g in enumerate(growths):
-            c = ws.cell(row=header_row, column=2 + j, value=g)
+        # Formulas, not literals. Written as values these axes were fixed at build time:
+        # change beta or the ERP in the workbook and the grid silently stops bracketing
+        # the base case while still presenting itself as centred on it.
+        for j, delta in enumerate(cfg.growth_deltas):
+            sign = "+" if delta >= 0 else "-"
+            c = ws.cell(
+                row=header_row,
+                column=2 + j,
+                value=f"={r['growth']}{sign}{abs(delta)}",
+            )
             c.font, c.fill, c.number_format = S.HEADER_FONT, S.HEADER_FILL, S.PERCENT_2
         cur.row += 1
 
@@ -875,11 +886,19 @@ class ExcelModelBuilder:
         fcf_range = f"DCF!${first_l}${r['fcf_row']}:${last_l}${r['fcf_row']}"
         exp_range = f"DCF!${first_l}${r['exp_row']}:${last_l}${r['exp_row']}"
         last_adj = f"DCF!${last_l}${r['adj_row']}"
+        # Mid-year discount period (4.5 under a 5-year forecast). Correct for Gordon:
+        # a perpetuity of mid-year flows really does start half a year early.
         last_exp = f"DCF!${last_l}${r['exp_row']}"
+        # Full period (5.0). An exit multiple is a sale price at a point in time, so it
+        # is discounted the whole way. The DCF sheet already branches on this; the two
+        # sensitivity grids below did not, and used the mid-year period for both --
+        # overstating every cell of the exit-multiple grid by (1+w)^0.5, about 4.9%.
+        last_idx = f"DCF!${last_l}${r['idx_row']}"
 
-        for wacc in waccs:
+        for _wacc, delta in zip(waccs, cfg.wacc_deltas, strict=True):
             row = cur.row
-            c = ws.cell(row=row, column=1, value=wacc)
+            sign = "+" if delta >= 0 else "-"
+            c = ws.cell(row=row, column=1, value=f"={r['wacc']}{sign}{abs(delta)}")
             c.font, c.number_format = S.INPUT_FONT, S.PERCENT_2
             for j, _ in enumerate(growths):
                 g_cell = f"{get_column_letter(2 + j)}${header_row}"
@@ -913,16 +932,17 @@ class ExcelModelBuilder:
         cur.row += 1
 
         term_ebitda = r["term_ebitda"]
-        for wacc in waccs:
+        for _wacc, delta in zip(waccs, cfg.wacc_deltas, strict=True):
             row = cur.row
-            c = ws.cell(row=row, column=1, value=wacc)
+            sign = "+" if delta >= 0 else "-"
+            c = ws.cell(row=row, column=1, value=f"={r['wacc']}{sign}{abs(delta)}")
             c.font, c.number_format = S.INPUT_FONT, S.PERCENT_2
             for j, _ in enumerate(multiples):
                 m_cell = f"{get_column_letter(2 + j)}${header2}"
                 w_cell = f"$A{row}"
                 formula = (
                     f"=(SUMPRODUCT({fcf_range},1/((1+{w_cell})^{exp_range}))"
-                    f"+{term_ebitda}*{m_cell}/(1+{w_cell})^{last_exp}"
+                    f"+{term_ebitda}*{m_cell}/(1+{w_cell})^{last_idx}"
                     f"-{r['net_bridge']})/{r['shares_out']}"
                 )
                 cell = ws.cell(row=row, column=2 + j, value=formula)
@@ -1001,7 +1021,7 @@ class ExcelModelBuilder:
             cur.note("No valuation ranges were produced for this run.")
             return
 
-        cur.headers(["Method", "Low", "Span", "High", "Midpoint"])
+        cur.headers(["Method", "Low", "Span", "High", "Base case"])
         first_data = cur.row
 
         for _, row in self.football.iterrows():
@@ -1084,8 +1104,9 @@ class ExcelModelBuilder:
 
         cur.title(f"{result.ticker} - Valuation Summary", width=4)
         cur.note(
-            "Every figure links to the DCF sheet. Blue cells on Inputs are the only "
-            "hardcoded numbers in the workbook."
+            "Headline figures link to the DCF sheet. The reported-figure blocks below "
+            "(comps, historicals and the SBC memo) are written as values, not formulas, "
+            "so they will not follow a change made on Inputs -- rebuild the workbook."
         )
         cur.skip()
 

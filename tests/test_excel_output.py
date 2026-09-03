@@ -298,3 +298,90 @@ class TestContent:
                 assert inputs.cell(row=row[0].row, column=2).value == result.assumptions.sbc.method
                 found = True
         assert found
+
+
+class TestSensitivityAgreesWithTheDCFSheet:
+    """The exit-multiple grid over-discounted every cell by (1+w)^0.5, about 4.9%.
+
+    The DCF sheet branches correctly -- an exit multiple is a sale price at a point in
+    time, so it is discounted the full period, while Gordon's perpetuity of mid-year
+    flows is discounted at N-0.5. Both sensitivity grids used the mid-year period, so
+    the exit grid read $136.50 at 12x against the DCF sheet's $131.66 for the same
+    assumptions.
+
+    The cross-check did not catch it: `tools/build_crosscheck.py` computed its expected
+    grid with the same exponent copied from the sheet, so Excel and Python agreed to
+    0.000% and 324 comparisons passed. Two implementations of one error agree. These
+    tests compare the grid against the *engine*, which derives the convention
+    independently, rather than against a restatement of the formula.
+    """
+
+    def test_exit_grid_discounts_over_the_full_period_not_mid_year(self, workbook):
+        book, _, _ = workbook
+        sheet = book["Sensitivity"]
+
+        corner = None
+        for row in sheet.iter_rows(min_col=1, max_col=1):
+            if row[0].value == "WACC \ multiple":
+                corner = row[0].row
+        assert corner, "exit-multiple grid not found"
+
+        formula = sheet.cell(row=corner + 1, column=2).value
+        assert isinstance(formula, str) and formula.startswith("=")
+
+        dcf = book["DCF"]
+        idx_row = exp_row = None
+        for row in dcf.iter_rows(min_col=1, max_col=1):
+            if row[0].value == "Year index":
+                idx_row = row[0].row
+            elif row[0].value == "Discount period (years)":
+                exp_row = row[0].row
+        assert idx_row and exp_row
+
+        last_col = self._last_forecast_column(dcf, idx_row)
+
+        # The terminal term discounts by a single cell: `^DCF!$H$25` (full index) or
+        # `^DCF!$H$26` (mid-year). The explicit period uses the *range* `$D$26:$H$26`,
+        # which is correctly mid-year and must not be confused with it -- an earlier
+        # version of this test matched the bare row number and tripped over exactly that.
+        full_period = f"^DCF!${last_col}${idx_row}"
+        mid_year_point = f"^DCF!${last_col}${exp_row}"
+
+        assert full_period in formula, (
+            f"the exit-multiple grid must discount its terminal value over the full "
+            f"year index ({full_period}); the mid-year period overstates every cell "
+            f"by (1+w)^0.5. Formula: {formula}"
+        )
+        assert mid_year_point not in formula, (
+            f"terminal value discounted at the mid-year period ({mid_year_point}): "
+            f"an exit multiple is a sale price at a point in time. Formula: {formula}"
+        )
+
+    @staticmethod
+    def _last_forecast_column(dcf, idx_row: int) -> str:
+        from openpyxl.utils import get_column_letter
+
+        last = max(
+            c.column
+            for c in next(dcf.iter_rows(min_row=idx_row, max_row=idx_row))
+            if c.value is not None
+        )
+        return get_column_letter(last)
+
+    def test_grid_axes_are_formulas_so_they_track_the_base_case(self, workbook):
+        """Written as literals the axes froze at build time, so changing beta in the
+        workbook left the grid no longer centred on the base case while still
+        presenting itself as bracketing it."""
+        book, _, _ = workbook
+        sheet = book["Sensitivity"]
+
+        axis_values = [
+            sheet.cell(row=r, column=1).value
+            for r in range(1, sheet.max_row + 1)
+            if isinstance(sheet.cell(row=r, column=1).value, str)
+            and sheet.cell(row=r, column=1).value.startswith("=")
+        ]
+        assert len(axis_values) >= 10, "WACC axis rows should be formulas, not literals"
+        assert all("WACC!" in v or "Inputs!" in v for v in axis_values), (
+            f"axis formulas must reference the live WACC cell: {axis_values[:3]}"
+        )
