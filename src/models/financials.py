@@ -74,6 +74,9 @@ FIELD_MAP: dict[str, list[str]] = {
     # automatically -- see the note there on why this stays the analyst's call.
     "long_term_investments": ["Investments And Advances", "Long Term Equity Investment"],
     "ordinary_shares": ["Ordinary Shares Number", "Share Issued"],
+    "invested_capital": ["Invested Capital"],
+    "net_ppe": ["Net PPE"],
+    "working_capital": ["Working Capital"],
 }
 
 # Fields the engine genuinely cannot proceed without.
@@ -211,8 +214,14 @@ class Financials:
         cl = self.series("current_liabilities")
         cash = self.series("cash").fillna(0.0)
         sti = self.series("short_term_investments").fillna(0.0)
+        total_cash_sti = cash + sti
+        combined = self.series("cash_and_sti_combined").fillna(0.0)
+        # Use combined row if separate cash/sti are zero or missing across the series
+        cash_deduction = (
+            total_cash_sti if (total_cash_sti.abs().sum() > 0 or combined.empty) else combined
+        )
         cur_debt = self.series("current_debt").fillna(0.0)
-        return (ca - cash - sti) - (cl - cur_debt)
+        return (ca - cash_deduction) - (cl - cur_debt)
 
     def to_dict(self) -> dict[str, Any]:
         return {

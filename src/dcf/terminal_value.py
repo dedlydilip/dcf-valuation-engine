@@ -209,6 +209,86 @@ class TerminalValue:
             warnings=warnings_out,
         )
 
+    def value_driver_value(
+        self,
+        terminal_nopat: float,
+        wacc: float,
+        growth: float | None = None,
+        ronic: float | None = None,
+        terminal_ebitda: float | None = None,
+    ) -> TerminalValueResult:
+        """McKinsey Value Driver formula: TV = NOPAT_{N+1} * (1 - g/RONIC) / (WACC - g).
+
+        When RONIC equals WACC (the standard competitive advantage fade condition),
+        this simplifies to TV = NOPAT_{N+1} / WACC = NOPAT_N * (1 + g) / WACC.
+        """
+        g = self.assumptions.perpetuity_growth if growth is None else float(growth)
+        cfg_ronic = self.assumptions.ronic if ronic is None else float(ronic)
+        warnings_out: list[str] = []
+
+        if pd.isna(wacc) or wacc <= g:
+            return TerminalValueResult(
+                method="value_driver",
+                value=float("nan"),
+                warnings=[
+                    f"WACC of {wacc:.2%} does not exceed perpetuity growth of {g:.2%}, so the "
+                    f"formula diverges. Lower the growth rate or revisit the discount rate."
+                ],
+            )
+
+        if pd.isna(terminal_nopat) or terminal_nopat <= 0:
+            return TerminalValueResult(
+                method="value_driver",
+                value=float("nan"),
+                warnings=[
+                    "Terminal NOPAT is not positive; Value Driver formula cannot be applied."
+                ],
+            )
+
+        effective_ronic = cfg_ronic if cfg_ronic is not None and cfg_ronic > 0 else wacc
+        reinvestment_rate = g / effective_ronic if effective_ronic > 0 else 1.0
+
+        # Growth at or above the return on new invested capital means every pound
+        # reinvested returns less than it costs, so the reinvestment rate reaches 1 and
+        # steady-state cash flow goes to zero or negative. That is correct finance --
+        # growing while earning below your cost of capital destroys value -- but it
+        # produces a non-positive terminal value, `ok` then reads False, and `select`
+        # quietly moves on to another method. Say so, or the caller sees a Gordon number
+        # under a value-driver heading and no indication the substitution happened.
+        if reinvestment_rate >= 1.0:
+            warnings_out.append(
+                f"Value Driver: perpetuity growth of {g:.2%} is at or above RONIC of "
+                f"{effective_ronic:.2%}, so the reinvestment rate is "
+                f"{reinvestment_rate:.2f} and steady-state cash flow is not positive. "
+                f"Growth funded at a return below the cost of capital destroys value. "
+                f"The terminal value is unusable and another method will carry the "
+                f"valuation -- raise RONIC or lower the growth rate."
+            )
+
+        nopat_next = terminal_nopat * (1.0 + g)
+        steady_state_fcf = nopat_next * (1.0 - reinvestment_rate)
+        value = steady_state_fcf / (wacc - g)
+
+        implied_multiple = None
+        if terminal_ebitda and terminal_ebitda > 0:
+            implied_multiple = value / terminal_ebitda
+
+        detail = {
+            "perpetuity_growth": g,
+            "wacc": wacc,
+            "ronic": effective_ronic,
+            "reinvestment_rate": reinvestment_rate,
+            "steady_state_fcf": steady_state_fcf,
+        }
+
+        return TerminalValueResult(
+            method="value_driver",
+            value=value,
+            implied_exit_multiple=implied_multiple,
+            decay_detail=detail,
+            warnings=warnings_out,
+        )
+
     # ------------------------------------------------------------------ combined
 
     def compute(
@@ -217,18 +297,43 @@ class TerminalValue:
         terminal_ebitda: float,
         wacc: float,
         year5_revenue_growth: float,
+        terminal_nopat: float | None = None,
     ) -> dict[str, TerminalValueResult]:
         """Run whichever methods are configured, each cross-checked against the other."""
         out: dict[str, TerminalValueResult] = {}
         method = self.assumptions.method
+        use_value_driver = (
+            self.assumptions.terminal_fcf_mode == "value_driver"
+            or method == "value_driver"
+        )
+
+        if terminal_nopat is not None:
+            out["value_driver"] = self.value_driver_value(
+                terminal_nopat, wacc, terminal_ebitda=terminal_ebitda
+            )
 
         if method in ("gordon", "both"):
-            out["gordon"] = self.gordon_value(
-                terminal_fcf, wacc, terminal_ebitda=terminal_ebitda
-            )
+            if use_value_driver and terminal_nopat is not None and out["value_driver"].ok:
+                vd = out["value_driver"]
+                out["gordon"] = TerminalValueResult(
+                    method="gordon",
+                    value=vd.value,
+                    implied_exit_multiple=vd.implied_exit_multiple,
+                    decay_detail=vd.decay_detail,
+                    warnings=vd.warnings,
+                )
+            else:
+                out["gordon"] = self.gordon_value(
+                    terminal_fcf, wacc, terminal_ebitda=terminal_ebitda
+                )
+
         if method in ("exit_multiple", "both"):
             out["exit_multiple"] = self.exit_multiple_value(
                 terminal_ebitda, year5_revenue_growth, terminal_fcf=terminal_fcf, wacc=wacc
+            )
+        if method == "value_driver" and "value_driver" not in out and terminal_nopat is not None:
+            out["value_driver"] = self.value_driver_value(
+                terminal_nopat, wacc, terminal_ebitda=terminal_ebitda
             )
 
         # A configured method that turns out to be unusable still needs an answer.
@@ -267,17 +372,26 @@ class TerminalValue:
         """
         preferred = self.assumptions.method
         if preferred == "both":
-            # Gordon carries the point estimate: it is the more theoretically grounded
-            # method and does not depend on a peer set that may not exist. But "both"
-            # must not look like a blend it is not, so the choice is stated explicitly
-            # rather than made silently -- see the note appended below.
-            order = ["gordon", "exit_multiple"]
+            order = ["gordon", "exit_multiple", "value_driver"]
+        elif preferred == "value_driver":
+            order = ["value_driver", "gordon", "exit_multiple"]
         else:
-            order = [preferred, "gordon", "exit_multiple"]
+            order = [preferred, "gordon", "exit_multiple", "value_driver"]
 
         for key in order:
             result = results.get(key)
             if result is not None and result.ok:
+                # A fallback is a change of methodology, not a detail. Asking for
+                # value_driver and receiving Gordon under the same heading is the same
+                # silent substitution the first audit found with method="both", and it
+                # is invisible unless the result says so out loud.
+                if preferred not in ("both", key):
+                    result.warnings.append(
+                        f"Terminal method {preferred!r} was requested but is unusable "
+                        f"here, so the {key.replace('_', ' ')} method carries the "
+                        f"valuation instead. The reported terminal value is not the one "
+                        f"you configured."
+                    )
                 return result
 
         for result in results.values():

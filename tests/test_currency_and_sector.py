@@ -84,25 +84,46 @@ class TestConversion:
     @pytest.mark.parametrize(
         "ticker,rate,statement", [("TSM", TWD_USD, "TWD"), ("SAP", EUR_USD, "EUR")]
     )
-    def test_conversion_lands_in_the_same_order_as_the_quoted_price(
-        self, ticker, rate, statement
-    ):
-        """Not a claim about the valuation -- a claim about the units.
+    def test_the_converted_valuation_is_pinned(self, ticker, rate, statement):
+        """The conversion has to be exact, not merely the right order of magnitude.
 
-        Unconverted, TSM came out at $5,294 against a $416 price and SAP at $176.90
-        against $210. The first is obviously broken; the second is not, which is why
-        this asserts a ratio band rather than eyeballing the number.
+        An earlier version of this test asserted `0.05 < ratio < 20` against the quoted
+        price. That band catches a catastrophe and nothing else. Reproduced with the
+        rate inverted:
+
+            TSM  correct $109.14 (ratio 0.263)  inverted $313,737 (ratio 755)  -> caught
+            SAP  correct $205.68 (ratio 0.981)  inverted $152.21 (ratio 0.726) -> MISSED
+
+        A 26% error on SAP sailed straight through, because a EUR/USD rate near 1.16
+        barely moves the magnitude when you flip it -- exactly the case this file exists
+        to guard, the currencies whose errors look reasonable.
+
+        Pinning the number is what binds. Note the answer is deliberately NOT linear in
+        the rate: market capitalisation is already in the price currency and is correctly
+        left alone, while debt is scaled, so the WACC weights shift with the rate. That
+        is right, and it is why the obvious "double the rate, double the value" check
+        does not hold.
         """
+        expected = {"TSM": 109.1382, "SAP": 205.6809}[ticker]
         result, financials = _run(ticker, {"currency": {"fx_rate": rate}})
-        price = result.bridge.current_price
-        assert price and price > 0
-        ratio = result.value_per_share / price
-        assert 0.05 < ratio < 20, (
-            f"{ticker} valued at {result.value_per_share:,.2f} against a price of "
-            f"{price:,.2f} -- {ratio:,.1f}x, which means the units still disagree"
-        )
+
         assert financials.fx_rate_applied == pytest.approx(rate)
         assert financials.original_currency == "USD"
+        assert result.value_per_share == pytest.approx(expected, abs=0.01), (
+            f"{ticker} converted at {rate} now values at {result.value_per_share:,.4f}, "
+            f"not the pinned {expected:,.4f}"
+        )
+
+    @pytest.mark.parametrize(
+        "ticker,rate", [("TSM", TWD_USD), ("SAP", EUR_USD)]
+    )
+    def test_an_inverted_rate_is_caught(self, ticker, rate):
+        """The mutation the old ratio-band assertion let through on SAP."""
+        correct, _ = _run(ticker, {"currency": {"fx_rate": rate}})
+        inverted, _ = _run(ticker, {"currency": {"fx_rate": 1.0 / rate}})
+        assert inverted.value_per_share != pytest.approx(
+            correct.value_per_share, rel=0.01
+        ), "inverting the rate must change the answer materially"
 
     def test_conversion_rewrites_the_statement_currency(self):
         """Which is what lets the quality gate pass without a separate flag."""

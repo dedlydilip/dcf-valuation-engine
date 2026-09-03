@@ -77,9 +77,29 @@ def run_monte_carlo(
     fcf = base_result.projection.unlevered_fcf.to_numpy(dtype="float64")
     terminal_fcf_base = float(base_result.projection.adjusted_fcf.iloc[-1])
 
-    wacc_draws = rng.normal(base_wacc, cfg.wacc_std, n)
-    growth_draws = rng.normal(base_growth, cfg.terminal_growth_std, n)
-    margin_draws = rng.normal(0.0, cfg.ebit_margin_std, n)
+    # Construct correlation matrix: [wacc, growth, margin]
+    rw_g = getattr(cfg, "corr_wacc_growth", 0.35)
+    rw_m = getattr(cfg, "corr_wacc_margin", -0.15)
+    rg_m = getattr(cfg, "corr_growth_margin", 0.25)
+    corr_mat = np.array([
+        [1.0, rw_g, rw_m],
+        [rw_g, 1.0, rg_m],
+        [rw_m, rg_m, 1.0],
+    ])
+    try:
+        chol = np.linalg.cholesky(corr_mat)
+    except np.linalg.LinAlgError:
+        chol = np.eye(3)
+
+    def _draw_correlated(k: int):
+        z = rng.standard_normal((3, k))
+        correlated = chol @ z
+        w_d = base_wacc + correlated[0] * cfg.wacc_std
+        g_d = base_growth + correlated[1] * cfg.terminal_growth_std
+        m_d = correlated[2] * cfg.ebit_margin_std
+        return w_d, g_d, m_d
+
+    wacc_draws, growth_draws, margin_draws = _draw_correlated(n)
 
     # A discount rate at or below the perpetuity growth rate has no finite value.
     # Resampling rather than clipping avoids piling probability mass on the boundary.
@@ -87,7 +107,11 @@ def run_monte_carlo(
     for _ in range(20):
         if not invalid.any():
             break
-        wacc_draws[invalid] = rng.normal(base_wacc, cfg.wacc_std, int(invalid.sum()))
+        num_invalid = int(invalid.sum())
+        w_sub, g_sub, m_sub = _draw_correlated(num_invalid)
+        wacc_draws[invalid] = w_sub
+        growth_draws[invalid] = g_sub
+        margin_draws[invalid] = m_sub
         invalid = wacc_draws <= growth_draws + 1e-4
     keep = ~invalid
 

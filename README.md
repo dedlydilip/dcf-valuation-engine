@@ -23,11 +23,13 @@ financial data committed to this repository.
 ```bash
 pip install -e ".[dev]"
 python run.py value --ticker AAPL --use-offline        # full model + Excel output
-python run.py scenarios --ticker AAPL --use-offline    # bear / base / bull
+python run.py reverse --ticker AAPL --use-offline      # market expectations (reverse DCF)
+python run.py scenarios --ticker AAPL --use-offline    # bear / base / bull + margin of safety
+python run.py dashboard --use-offline                  # interactive multi-company dashboard
 python run.py value --ticker MSFT --sbc-method dilute  # switch SBC treatment
 python run.py snapshot --ticker NVDA                   # capture new offline fixtures
 python run.py value --ticker SAP --auto-fx             # ADR: convert at spot
-pytest                                                  # 244 tests, no network
+pytest                                                  # 261 tests, no network
 ```
 
 The generated workbook lands in `outputs/` with eight sheets: Summary, Inputs, WACC,

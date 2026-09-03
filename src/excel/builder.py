@@ -1130,6 +1130,65 @@ class ExcelModelBuilder:
         )
         cur.skip()
 
+        if self.financials is not None:
+            try:
+                from src.dcf.moat import analyze_moat
+                from src.dcf.reverse_dcf import solve_reverse_dcf
+
+                moat = analyze_moat(self.financials, result)
+                rev = solve_reverse_dcf(
+                    self.financials,
+                    result.assumptions,
+                    self.comps.terminal_inputs() if self.comps else {},
+                    ticker=result.ticker,
+                )
+
+                cur.section("Economic Moat & Capital Efficiency", width=4)
+                cur.label_value(
+                    "Invested capital (base)", moat.invested_capital_base, S.MONEY_MM, kind="input"
+                )
+                cur.label_value("Base ROIC", moat.roic_base, S.PERCENT_2, kind="input")
+                cur.label_value(
+                    "Economic spread (ROIC - WACC)", moat.economic_spread, S.PERCENT_2, kind="input"
+                )
+                cur.label_value("Moat assessment", moat.moat_rating, kind="input")
+                cur.skip()
+
+                cur.section("Market Expectations & Margin of Safety", width=4)
+                if rev.implied_revenue_growth_cagr is not None:
+                    cur.label_value(
+                        "Market-implied 5-yr revenue CAGR",
+                        rev.implied_revenue_growth_cagr,
+                        S.PERCENT_2,
+                        kind="input",
+                    )
+                else:
+                    cur.label_value(
+                        "Market-implied 5-yr revenue CAGR", rev.implied_revenue_status, kind="input"
+                    )
+
+                if rev.implied_perpetuity_growth is not None:
+                    cur.label_value(
+                        "Market-implied perpetuity growth (g)",
+                        rev.implied_perpetuity_growth,
+                        S.PERCENT_2,
+                        kind="input",
+                    )
+
+                vps_ref = r["vps"]
+                cur.label_value(
+                    "Target entry (15% moat discount)", f"={vps_ref}*0.85", S.PRICE, kind="link"
+                )
+                cur.label_value(
+                    "Target entry (25% standard discount)", f"={vps_ref}*0.75", S.PRICE, kind="link"
+                )
+                cur.label_value(
+                    "Target entry (35% deep value discount)", f"={vps_ref}*0.65", S.PRICE, kind="link"
+                )
+                cur.skip()
+            except Exception:
+                pass
+
         if self.monte_carlo:
             cur.section("Monte Carlo (WACC, terminal growth, EBIT margin)", width=4)
             for key, label, fmt in (

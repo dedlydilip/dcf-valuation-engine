@@ -63,6 +63,8 @@ class ProjectionAssumptions(_Base):
     capex_pct_revenue: Series | None = None
     nwc_pct_revenue: Series | None = None
     mid_year_convention: bool = True
+    fade_capex_to_da: bool = False
+    terminal_capex_to_da: float = Field(1.0, ge=0.5, le=5.0)
 
     @model_validator(mode="after")
     def _check_series_lengths(self) -> ProjectionAssumptions:
@@ -88,8 +90,9 @@ class WACCAssumptions(_Base):
     cost_of_debt_override: float | None = Field(None, ge=0.0, le=0.50)
     size_premium: float = Field(0.0, ge=0.0, le=0.10)
     country_risk_premium: float = Field(0.0, ge=0.0, le=0.20)
+    target_debt_weight: float = Field(0.20, ge=0.0, le=0.95)
     capital_structure: Literal["current", "target"] = "current"
-    target_debt_weight: float = Field(0.20, ge=0.0, lt=1.0)
+    floor_cost_of_equity: bool = False
 
 
 class SBCAssumptions(_Base):
@@ -144,8 +147,10 @@ class SBCAssumptions(_Base):
 
 
 class TerminalAssumptions(_Base):
-    method: Literal["gordon", "exit_multiple", "both"] = "both"
+    method: Literal["gordon", "exit_multiple", "both", "value_driver"] = "both"
     perpetuity_growth: float = Field(0.025, ge=-0.02, le=0.06)
+    terminal_fcf_mode: Literal["fcf5", "value_driver"] = "fcf5"
+    ronic: float | None = Field(None, gt=0.0, le=2.0)
     exit_multiple_mode: Literal["static", "dynamic"] = "dynamic"
     static_exit_multiple: float = Field(12.0, gt=0.0, le=100.0)
     decay_turns_per_pp: float = Field(2.0, ge=0.0, le=20.0)
@@ -157,6 +162,7 @@ class BridgeAssumptions(_Base):
     minority_interest: float | None = None
     preferred_equity: float | None = None
     investments: float | None = None
+    include_investments: bool = False
 
 
 class CompsAssumptions(_Base):
@@ -175,6 +181,9 @@ class MonteCarloAssumptions(_Base):
     wacc_std: float = Field(0.010, ge=0.0, le=0.10)
     terminal_growth_std: float = Field(0.005, ge=0.0, le=0.05)
     ebit_margin_std: float = Field(0.020, ge=0.0, le=0.20)
+    corr_wacc_growth: float = Field(0.35, ge=-0.99, le=0.99)
+    corr_wacc_margin: float = Field(-0.15, ge=-0.99, le=0.99)
+    corr_growth_margin: float = Field(0.25, ge=-0.99, le=0.99)
 
 
 class SensitivityAssumptions(_Base):

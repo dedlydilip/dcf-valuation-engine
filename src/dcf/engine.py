@@ -273,6 +273,7 @@ class DCFEngine:
         # accounting choice. Beyond the horizon, perpetual dilution and perpetual
         # expensing describe the same steady state, so the model expenses it.
         terminal_fcf = float(projection.adjusted_fcf.iloc[-1])
+        terminal_nopat = float(projection.table.loc["nopat"].iloc[-1])
 
         tv = TerminalValue(assumptions, self.comps_multiples)
         terminal_all = tv.compute(
@@ -280,6 +281,7 @@ class DCFEngine:
             terminal_ebitda=term_ebitda,
             wacc=wacc,
             year5_revenue_growth=term_growth,
+            terminal_nopat=terminal_nopat,
         )
         terminal = tv.select(terminal_all)
         for result in terminal_all.values():

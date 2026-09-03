@@ -3,6 +3,91 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## Audit of the parallel work — September 2026
+
+Prompted by "recheck if the work is genuine". Verifying live rather than citing pass
+counts turned up something the question did not ask about: the working tree had diverged
+from the pushed commit by 692 lines across 12 files plus 9 new files, none of it written
+in the session that had just pushed. This entry covers auditing that work before it
+reached GitHub, plus one defect found in the auditing session's own tests.
+
+Headline numbers unmoved: AAPL $120.08, MSFT $188.99, TSLA $8.86. Test count 272 -> 281.
+Excel cross-check still 324 comparisons at 0.1%.
+
+### Fixed — a requested terminal-value method was silently substituted
+
+Setting `terminal.method = "value_driver"` with a RONIC below the perpetuity growth rate
+returned a **Gordon Growth number under the value-driver heading, with no warning**:
+
+```
+requested method    : value_driver (ronic 2% < g 2.5%)
+method actually used: gordon
+value per share     : $120.08
+warnings            : none
+```
+
+The mechanism: growth at or above RONIC drives the reinvestment rate to 1.25, steady-state
+cash flow negative, terminal value -3,416, `ok` reads False, and `select` quietly moves on.
+The `ok` guard correctly prevents a negative terminal value being *used* — but the
+substitution itself was invisible. This is the same class of defect the first audit found
+with `method: "both"` silently resolving to Gordon, reintroduced through a new code path.
+
+Two fixes: `value_driver_value` now warns when the reinvestment rate reaches 1, explaining
+that growth funded below the cost of capital destroys value; and `select` warns whenever a
+configured method is unusable and a different one carries the valuation. Verified no false
+positive on the healthy path — RONIC 12% still selects value_driver, giving $100.21 against
+Gordon's $120.08.
+
+### Fixed — `test_moat.py` did not test the moat
+
+Mutation testing: pinning `roic_base = 0.15` as a constant inside `analyze_moat` left all
+three moat tests green. They asserted `roic_base > 0` and that `moat_rating` was a member
+of the valid list — shape, never value. The arithmetic turned out to be **correct**
+(re-derived independently as EBIT x (1-t) / invested capital, matching to 1e-9 on all
+three fixtures) but it was correct untested.
+
+Added six binding tests pinning ROIC to AAPL 0.609719, MSFT 0.276576, TSLA 0.049138,
+re-deriving the definition independently, and checking the economic spread. The constant
+mutant now fails six of them.
+
+### Fixed — my own conversion test was too weak
+
+`test_conversion_lands_in_the_same_order_as_the_quoted_price` asserted only
+`0.05 < ratio < 20` against the quoted price. With the FX rate inverted:
+
+```
+TSM  correct $109.14 (ratio 0.263)   inverted $313,737 (ratio 755)   -> caught
+SAP  correct $205.68 (ratio 0.981)   inverted $152.21 (ratio 0.726)  -> MISSED
+```
+
+A 26% error passed, because a EUR/USD rate near 1.16 barely moves the magnitude when
+flipped — exactly the case the file exists to guard. Replaced with a pinned value.
+
+Worth recording: the obvious replacement, asserting value per share scales linearly with
+the rate, **fails and should**. Market capitalisation is already in the price currency and
+is correctly left unscaled while debt is scaled, so WACC weights shift with the rate
+(SAP: 8.2226% at 1x, 8.0912% at 2x). The non-linearity is right; the premise was wrong.
+
+### Audited and found sound
+
+- **`reverse_dcf.py`** — uses the correct Gordon back-solve `g = (TV x WACC - FCF)/(TV + FCF)`,
+  not the no-growth shortcut. Substituting the shortcut fails its round-trip test.
+- **`scenario_blender.py`** — `normalize_weights` correctly handles negative, empty and
+  zero-total weights. Blend arithmetic re-derived by hand: 120.4850, exact match.
+- **`dashboard.py`** — 438 lines and no tests, but it is an HTML template with no financial
+  arithmetic in Python, so it cannot produce a wrong number of its own. Smoke-tested end to
+  end; its figures reconcile with the engine (AAPL ROIC 61.0%, MSFT 27.7%).
+- **`terminal_value.py` Value Driver formula** — `TV = NOPAT x (1 - g/RONIC) / (WACC - g)`
+  is stated and implemented correctly, and is opt-in rather than silently replacing Gordon.
+
+### Noted, not changed
+
+- `dashboard.py` loads Tailwind from `gstatic.com/antigravity/web/dev/`, a dev-channel CDN
+  path. It works, but it is not a stable asset URL for something meant to be shared.
+- `ronic` is a validated field (`gt=0`, `le=2.0`) but has no entry in
+  `config/assumptions.yaml`, unlike every other assumption. It defaults to WACC, which is
+  the standard fade condition and a defensible default — just an undocumented one.
+
 ## Semiconductor peer bucket — September 2026
 
 Found by manually valuing Micron (MU) after the sector sweep above shipped. Nothing

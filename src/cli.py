@@ -12,7 +12,9 @@ committed to the repository, so the valuation reproduces with no network at all.
 from __future__ import annotations
 
 import json
+import math
 import warnings
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +23,12 @@ import pandas as pd
 from pydantic import ValidationError
 
 from src.comps.comps_engine import CompsEngine
+from src.dcf.dashboard import generate_dashboard_html
 from src.dcf.engine import DCFEngine, ValuationResult
+from src.dcf.moat import analyze_moat
 from src.dcf.monte_carlo import run_monte_carlo
+from src.dcf.reverse_dcf import ReverseDCFResult, solve_reverse_dcf
+from src.dcf.scenario_blender import blend_scenarios
 from src.dcf.sensitivity import football_field, wacc_vs_growth
 from src.excel.builder import build_excel_model
 from src.fetcher.snapshot import SAMPLE_TICKERS, snapshot_ticker
@@ -83,19 +89,28 @@ def _common(function):
         help="Value a bank, insurer or asset manager anyway. An unlevered DCF cannot "
         "describe one -- for a lender, financing IS the business.",
     )(function)
+    function = click.option(
+        "--include-investments",
+        is_flag=True,
+        help="Include non-operating marketable investments (e.g. securities portfolios) in equity value.",
+    )(function)
+    function = click.option(
+        "--value-driver",
+        is_flag=True,
+        help="Use McKinsey Value Driver formula (steady-state RONIC) for terminal value.",
+    )(function)
+    function = click.option(
+        "--fade-capex",
+        is_flag=True,
+        help="Linearly converge CapEx toward D&A over the 5-year forecast horizon.",
+    )(function)
     return function
-
 
 
 def _currency_overrides(
     fx_rate: float | None, auto_fx: bool, force_sector: bool
 ) -> dict[str, Any]:
-    """Turn the currency and sector flags into config overrides.
-
-    Kept in one place because `value` and `scenarios` must behave identically -- a
-    scenario comparison that silently refused to convert while `value` converted would
-    print three numbers on a different basis from the one beside it.
-    """
+    """Turn the currency and sector flags into config overrides."""
     out: dict[str, Any] = {}
     currency: dict[str, Any] = {}
     if fx_rate is not None:
@@ -106,6 +121,24 @@ def _currency_overrides(
         out["currency"] = currency
     if force_sector:
         out["quality"] = {"allow_unsuitable_sector": True}
+    return out
+
+
+def _shared_overrides(
+    fx_rate: float | None,
+    auto_fx: bool,
+    force_sector: bool,
+    include_investments: bool = False,
+    value_driver: bool = False,
+    fade_capex: bool = False,
+) -> dict[str, Any]:
+    out = _currency_overrides(fx_rate, auto_fx, force_sector)
+    if include_investments:
+        out.setdefault("bridge", {})["include_investments"] = True
+    if value_driver:
+        out.setdefault("terminal", {})["terminal_fcf_mode"] = "value_driver"
+    if fade_capex:
+        out.setdefault("projection", {})["fade_capex_to_da"] = True
     return out
 
 
@@ -157,6 +190,9 @@ def value(
     fx_rate: float | None,
     auto_fx: bool,
     force_sector: bool,
+    include_investments: bool,
+    value_driver: bool,
+    fade_capex: bool,
 ) -> None:
     """Value one company and build the Excel model."""
     ticker = ticker.upper().strip()
@@ -173,7 +209,11 @@ def value(
         overrides["projection"]["revenue_growth"] = _resize_growth(config, scenario, years)
     if peers:
         overrides["comps"] = {"peers": [p.strip().upper() for p in peers.split(",") if p.strip()]}
-    overrides.update(_currency_overrides(fx_rate, auto_fx, force_sector))
+    overrides.update(
+        _shared_overrides(
+            fx_rate, auto_fx, force_sector, include_investments, value_driver, fade_capex
+        )
+    )
 
     try:
         assumptions = DCFAssumptions.from_yaml(config, scenario=scenario, overrides=_clean(overrides))
@@ -213,8 +253,9 @@ def value(
     }
     implied = comps.implied_values(metrics) if comps.usable_for_terminal else None
     field = football_field(result, sensitivity, implied, monte.stats if monte else None)
+    moat = analyze_moat(financials, result)
 
-    _print_report(result, comps, monte, field)
+    _print_report(result, comps, monte, field, moat=moat)
 
     if not no_excel:
         out_dir = Path(out)
@@ -233,6 +274,7 @@ def value(
             json_path = path.with_suffix(".json")
             payload = {
                 "summary": _jsonable(result.summary()),
+                "moat": _jsonable(moat.summary()),
                 "comps_medians": _jsonable(comps.medians),
                 "monte_carlo": _jsonable(monte.stats) if monte else None,
                 "warnings": result.warnings,
@@ -253,20 +295,31 @@ def value(
     default=None,
     help="Override the stock-compensation treatment.",
 )
+@click.option(
+    "--weights",
+    default=None,
+    help="Comma-separated scenario weights (bear,base,bull), e.g. '0.25,0.50,0.25'.",
+)
 def scenarios(
     ticker: str,
     use_offline: bool,
     offline_dir: str,
     config: str,
     sbc_method: str | None,
+    weights: str | None,
     fx_rate: float | None,
     auto_fx: bool,
     force_sector: bool,
+    include_investments: bool,
+    value_driver: bool,
+    fade_capex: bool,
 ) -> None:
-    """Run bear, base and bull side by side."""
+    """Run bear, base and bull side by side with probability weighting and margin of safety."""
     ticker = ticker.upper().strip()
     rows = []
-    shared = _currency_overrides(fx_rate, auto_fx, force_sector)
+    shared = _shared_overrides(
+        fx_rate, auto_fx, force_sector, include_investments, value_driver, fade_capex
+    )
     try:
         # The statements are fetched once and shared across all three scenarios, so
         # the currency settings have to be resolved before the fetch rather than per
@@ -325,6 +378,281 @@ def scenarios(
     if price:
         click.echo(f"\nMarket price: ${float(price):,.2f}")
 
+    # Probability weighting & Margin of Safety
+    weights_dict = None
+    if weights:
+        try:
+            parts = [float(p.strip()) for p in weights.split(",") if p.strip()]
+            if len(parts) != 3:
+                raise ValueError
+            weights_dict = {"bear": parts[0], "base": parts[1], "bull": parts[2]}
+        except ValueError as exc:
+            raise click.ClickException(
+                "Invalid --weights format: expected 3 comma-separated numbers (e.g. '0.25,0.50,0.25')"
+            ) from exc
+
+    scenario_vals = {r["scenario"]: r["value per share"] for r in rows}
+    price_val = float(price) if price else None
+    blend = blend_scenarios(scenario_vals, weights_dict, current_price=price_val)
+
+    click.secho("\nProbability-weighted Valuation & Margin of Safety", fg="cyan", bold=True)
+    click.echo(
+        f"  Weights applied: Bear {blend.normalized_weights['bear']:.0%}, "
+        f"Base {blend.normalized_weights['base']:.0%}, Bull {blend.normalized_weights['bull']:.0%}"
+    )
+    click.echo(f"  Expected Fair Value:       ${blend.expected_value:>10,.2f}")
+    if blend.discount_to_expected is not None:
+        disc_color = "green" if blend.discount_to_expected >= 0 else "red"
+        click.secho(f"  Margin of Safety vs Tape:  {blend.discount_to_expected:>10.1%}", fg=disc_color)
+        click.echo(f"  Verdict:                   {blend.verdict}")
+        if blend.asymmetry_ratio is not None:
+            if math.isinf(blend.asymmetry_ratio):
+                click.echo("  Risk/Reward Asymmetry:     Pure Upside (Current price below bear case)")
+            else:
+                click.echo(f"  Risk/Reward Asymmetry:     {blend.asymmetry_ratio:>10.2f}x (Bull upside / Bear downside)")
+
+    click.echo("\n  Target Buy Prices (Margin of Safety Hurdles):")
+    for tier, target in blend.target_buy_prices.items():
+        click.echo(f"    {tier:<38} ${target:>8,.2f}")
+
+
+# --------------------------------------------------------------------- reverse
+
+
+@cli.command()
+@_common
+@click.option("--price", type=float, default=None, help="Target stock price to back-solve for.")
+def reverse(
+    ticker: str,
+    use_offline: bool,
+    offline_dir: str,
+    config: str,
+    price: float | None,
+    fx_rate: float | None,
+    auto_fx: bool,
+    force_sector: bool,
+    include_investments: bool,
+    value_driver: bool,
+    fade_capex: bool,
+) -> None:
+    """Reverse DCF: extract market-implied growth, margins, and terminal assumptions."""
+    ticker = ticker.upper().strip()
+    shared = _shared_overrides(
+        fx_rate, auto_fx, force_sector, include_investments, value_driver, fade_capex
+    )
+    try:
+        assumptions = DCFAssumptions.from_yaml(
+            config, scenario="base", overrides=_clean(dict(shared))
+        )
+        financials = YFinanceClient(
+            ticker, offline_mode=use_offline, offline_path=Path(offline_dir) / ticker
+        ).get_financials(currency=assumptions.currency)
+
+        comps = CompsEngine(
+            ticker,
+            assumptions,
+            offline_mode=use_offline,
+            offline_dir=Path(offline_dir),
+            target_financials=financials,
+        ).run()
+
+        result = solve_reverse_dcf(
+            financials,
+            assumptions,
+            comps.terminal_inputs(),
+            ticker=ticker,
+            target_price=price,
+        )
+    except (ValuationError, ValidationError, ValueError, FileNotFoundError) as exc:
+        raise click.ClickException(_explain(exc)) from exc
+
+    _print_reverse_report(result)
+
+
+# ----------------------------------------------------------------- dashboard
+
+
+@cli.command()
+@click.option(
+    "--tickers",
+    "-t",
+    default="AAPL,MSFT,TSLA,SAP,TSM",
+    show_default=True,
+    help="Comma-separated tickers to include in the dashboard.",
+)
+@click.option(
+    "--use-offline",
+    is_flag=True,
+    help="Use committed sample data instead of the live API.",
+)
+@click.option(
+    "--offline-dir",
+    default=str(DEFAULT_OFFLINE_DIR),
+    type=click.Path(),
+    show_default=True,
+    help="Directory holding offline fixtures.",
+)
+@click.option(
+    "--config",
+    default="config/assumptions.yaml",
+    type=click.Path(),
+    show_default=True,
+    help="Base assumptions file.",
+)
+@click.option(
+    "--out",
+    default="outputs/dashboard.html",
+    type=click.Path(),
+    show_default=True,
+    help="Path to write the interactive HTML dashboard.",
+)
+@click.option(
+    "--open-browser",
+    is_flag=True,
+    help="Automatically open the generated dashboard in your default browser.",
+)
+@click.option(
+    "--include-investments",
+    is_flag=True,
+    help="Include non-operating marketable investments in the equity value bridge.",
+)
+@click.option(
+    "--value-driver",
+    is_flag=True,
+    help="Use McKinsey Value Driver formula (steady-state RONIC) for terminal value.",
+)
+@click.option(
+    "--fade-capex",
+    is_flag=True,
+    help="Linearly converge CapEx toward D&A over the 5-year forecast horizon.",
+)
+def dashboard(
+    tickers: str,
+    use_offline: bool,
+    offline_dir: str,
+    config: str,
+    out: str,
+    open_browser: bool,
+    include_investments: bool,
+    value_driver: bool,
+    fade_capex: bool,
+) -> None:
+    """Generate multi-company valuation dashboard (terminal table + interactive HTML)."""
+    t_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    click.secho(f"\nGenerating Valuation Dashboard for {len(t_list)} companies...", fg="cyan", bold=True)
+
+    data_payload: dict[str, Any] = {}
+    table_rows: list[dict[str, Any]] = []
+
+    for ticker in t_list:
+        try:
+            shared: dict[str, Any] = {}
+            if ticker in ("SAP", "TSM"):
+                shared["currency"] = {"auto_fx": True}
+            if include_investments:
+                shared.setdefault("bridge", {})["include_investments"] = True
+            if value_driver:
+                shared.setdefault("terminal", {})["terminal_fcf_mode"] = "value_driver"
+            if fade_capex:
+                shared.setdefault("projection", {})["fade_capex_to_da"] = True
+
+            base_assump = DCFAssumptions.from_yaml(config, scenario="base", overrides=_clean(shared) or None)
+            client = YFinanceClient(
+                ticker, offline_mode=use_offline, offline_path=Path(offline_dir) / ticker
+            )
+            financials = client.get_financials(currency=base_assump.currency)
+            comps = CompsEngine(
+                ticker, base_assump, offline_mode=use_offline, offline_dir=Path(offline_dir), target_financials=financials
+            ).run()
+
+            scenario_vals: dict[str, float] = {}
+            for sc in ("bear", "base", "bull"):
+                sc_assump = DCFAssumptions.from_yaml(config, scenario=sc, overrides=_clean(shared) or None)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    sc_res = DCFEngine(financials, sc_assump, comps.terminal_inputs(), ticker=ticker).run()
+                scenario_vals[sc] = sc_res.value_per_share
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                base_res = DCFEngine(financials, base_assump, comps.terminal_inputs(), ticker=ticker).run()
+                moat = analyze_moat(financials, base_res)
+                rev = solve_reverse_dcf(financials, base_assump, comps.terminal_inputs(), ticker=ticker)
+
+            price = base_res.bridge.current_price
+            blend = blend_scenarios(scenario_vals, current_price=price)
+
+            data_payload[ticker] = {
+                "ticker": ticker,
+                "current_price": price,
+                "currency": financials.currency,
+                "base_value": base_res.value_per_share,
+                "bear_value": scenario_vals["bear"],
+                "bull_value": scenario_vals["bull"],
+                "upside": base_res.bridge.upside,
+                "wacc": base_res.wacc.wacc,
+                "cost_of_equity": base_res.wacc.cost_of_equity,
+                "cost_of_debt": base_res.wacc.cost_of_debt,
+                "beta": base_res.wacc.beta,
+                "tv_pct_ev": base_res.terminal_value_share,
+                "ev": base_res.enterprise_value,
+                "equity_value": base_res.bridge.equity_value,
+                "shares": base_res.bridge.shares,
+                "moat": {
+                    "invested_capital": moat.invested_capital_base,
+                    "nopat": moat.nopat_base,
+                    "roic": moat.roic_base,
+                    "spread": moat.economic_spread,
+                    "rating": moat.moat_rating,
+                    "diagnostics": moat.diagnostics,
+                },
+                "reverse_dcf": {
+                    "implied_rev_growth": rev.implied_revenue_growth_cagr,
+                    "implied_rev_status": rev.implied_revenue_status,
+                    "implied_margin": rev.implied_ebit_margin,
+                    "implied_margin_status": rev.implied_margin_status,
+                    "implied_perpetuity_g": rev.implied_perpetuity_growth,
+                    "implied_growth_status": rev.implied_growth_status,
+                    "fcf_yield_trailing": rev.fcf_yield_trailing,
+                    "fcf_yield_forward": rev.fcf_yield_forward,
+                    "warnings": rev.warnings,
+                },
+                "blended": {
+                    "expected_value": blend.expected_value,
+                    "discount_to_expected": blend.discount_to_expected,
+                    "asymmetry_ratio": blend.asymmetry_ratio,
+                    "verdict": blend.verdict,
+                    "target_buys": blend.target_buy_prices,
+                },
+            }
+
+            table_rows.append(
+                {
+                    "Ticker": ticker,
+                    "Market Price": f"${price:,.2f}" if price else "n/a",
+                    "Base DCF": f"${base_res.value_per_share:,.2f}",
+                    "Blended Fair": f"${blend.expected_value:,.2f}",
+                    "WACC": f"{base_res.wacc.wacc:.1%}",
+                    "ROIC (Spread)": f"{moat.roic_base:.1%} ({moat.economic_spread:+.1%})",
+                    "Implied CAGR": f"{rev.implied_revenue_growth_cagr:.1%}" if rev.implied_revenue_growth_cagr is not None else rev.implied_revenue_status,
+                    "Verdict": blend.verdict,
+                }
+            )
+        except Exception as exc:
+            click.secho(f"  Warning: skipping {ticker}: {exc}", fg="yellow")
+
+    if table_rows:
+        df = pd.DataFrame(table_rows).set_index("Ticker")
+        click.echo()
+        click.echo(df.to_string())
+
+    out_path = Path(out)
+    generate_dashboard_html(data_payload, out_path)
+    click.secho(f"\nInteractive HTML dashboard generated at: {out_path.resolve()}", fg="green", bold=True)
+
+    if open_browser:
+        webbrowser.open(out_path.resolve().as_uri())
+
 
 # ------------------------------------------------------------------- snapshot
 
@@ -349,7 +677,9 @@ def snapshot(ticker: str | None, offline_dir: str) -> None:
 # ------------------------------------------------------------------- printing
 
 
-def _print_report(result: ValuationResult, comps, monte, field: pd.DataFrame) -> None:
+def _print_report(
+    result: ValuationResult, comps, monte, field: pd.DataFrame, moat=None
+) -> None:
     summary = result.summary()
     ticker = summary["ticker"]
 
@@ -373,6 +703,16 @@ def _print_report(result: ValuationResult, comps, monte, field: pd.DataFrame) ->
     click.echo(f"    cost of equity           {summary['cost_of_equity']:>12.2%}")
     click.echo(f"    cost of debt             {summary['cost_of_debt']:>12.2%}")
     click.echo(f"    beta                     {summary['beta']:>12.2f}")
+
+    if moat is not None:
+        click.secho("\n  Economic Moat & Capital Efficiency (ROIC vs. WACC)", bold=True)
+        click.echo(f"    Base Invested Capital    {_bn(moat.invested_capital_base):>13}")
+        click.echo(f"    Base ROIC                {moat.roic_base:>12.1%}")
+        spread_color = "green" if moat.economic_spread >= 0 else "red"
+        click.secho(f"    Economic Spread (vs WACC){moat.economic_spread:>12.1%}", fg=spread_color)
+        click.echo(f"    Moat Assessment          {moat.moat_rating}")
+        for diag in moat.diagnostics:
+            click.echo(f"      * {diag}")
 
     click.echo(f"\n  Enterprise value          {_bn(summary['enterprise_value']):>13}")
     click.echo(f"  Equity value              {_bn(summary['equity_value']):>13}")
@@ -419,6 +759,55 @@ def _print_report(result: ValuationResult, comps, monte, field: pd.DataFrame) ->
         click.secho("\n  Warnings and notes", fg="yellow", bold=True)
         for message in [*result.warnings, *notes]:
             click.secho(f"    - {message}", fg="yellow")
+
+
+def _print_reverse_report(result: ReverseDCFResult) -> None:
+    click.secho(f"\n{'=' * 68}", fg="cyan")
+    click.secho(
+        f"{result.ticker} - Reverse DCF / Market Expectations Analysis",
+        fg="cyan",
+        bold=True,
+    )
+    click.secho("=" * 68, fg="cyan")
+
+    click.echo(f"\n  Current Market Price:       ${result.current_price:>12,.2f}")
+    click.echo(f"  Base Model DCF Value:       ${result.base_value_per_share:>12,.2f}")
+    spread = (result.current_price / result.base_value_per_share - 1.0) if result.base_value_per_share > 0 else 0.0
+    color = "yellow" if abs(spread) > 0.3 else "green"
+    click.secho(f"  Market Premium / (Discount): {spread:>12.1%}", fg=color)
+    click.echo(f"  Discount Rate (WACC):        {result.wacc:>12.2%}")
+
+    click.secho("\n  Market-Implied Expectations Baked into Current Price:", bold=True)
+
+    if result.implied_revenue_growth_cagr is not None:
+        click.echo(f"    Implied 5-Year Revenue CAGR: {result.implied_revenue_growth_cagr:>10.2%}")
+    else:
+        click.echo(f"    Implied 5-Year Revenue CAGR: {result.implied_revenue_status}")
+
+    if result.implied_ebit_margin is not None:
+        click.echo(f"    Implied Operating Margin:   {result.implied_ebit_margin:>10.2%}")
+    else:
+        click.echo(f"    Implied Operating Margin:   {result.implied_margin_status}")
+
+    if result.implied_perpetuity_growth is not None:
+        growth_str = f"{result.implied_perpetuity_growth:>10.2%}"
+        if result.implied_perpetuity_growth > 0.035:
+            click.secho(f"    Implied Perpetuity Growth:  {growth_str}  (Above 3.5% GDP ceiling!)", fg="red")
+        else:
+            click.echo(f"    Implied Perpetuity Growth:  {growth_str}")
+    else:
+        click.echo(f"    Implied Perpetuity Growth:  {result.implied_growth_status}")
+
+    click.secho("\n  Cash Flow Yields at Current Market Price:", bold=True)
+    if result.fcf_yield_trailing is not None:
+        click.echo(f"    Trailing Reported FCF Yield: {result.fcf_yield_trailing:>10.2%}")
+    if result.fcf_yield_forward is not None:
+        click.echo(f"    Forward Year-1 FCF Yield:    {result.fcf_yield_forward:>10.2%}")
+
+    if result.warnings:
+        click.secho("\n  Expectation Diagnostics:", fg="yellow", bold=True)
+        for warn in result.warnings:
+            click.secho(f"    - {warn}", fg="yellow")
 
 
 def _explain(exc: Exception) -> str:

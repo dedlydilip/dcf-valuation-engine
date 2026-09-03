@@ -153,6 +153,13 @@ class Projector:
         capex_pct = expand_series(
             proj.capex_pct_revenue, years, self._hist_pct_revenue("capex", 0.03)
         )
+        if proj.fade_capex_to_da and years > 1:
+            start_ratio = capex_pct[0]
+            target_ratio = proj.terminal_capex_to_da * da_pct[-1]
+            capex_pct = [
+                start_ratio + (target_ratio - start_ratio) * (i / (years - 1))
+                for i in range(years)
+            ]
         nwc_pct = expand_series(proj.nwc_pct_revenue, years, self._base_nwc_pct())
 
         sbc_series = self._forecast_sbc(years, growth, base_revenue)
@@ -273,8 +280,19 @@ class Projector:
                 return float(nwc.iloc[-1] / revenue)
         ca = self._hist("current_assets")
         cl = self._hist("current_liabilities")
+        cash = self._hist("cash")
+        sti = self._hist("short_term_investments")
+        combined = self._hist("cash_and_sti_combined")
+        cash_to_deduct = (cash if pd.notna(cash) else 0.0) + (sti if pd.notna(sti) else 0.0)
+        if cash_to_deduct == 0.0 and pd.notna(combined):
+            cash_to_deduct = combined
+        cur_debt = self._hist("current_debt")
+        debt_to_deduct = cur_debt if pd.notna(cur_debt) else 0.0
+
         if pd.notna(ca) and pd.notna(cl) and revenue:
-            return float((ca - cl) / revenue)
+            op_ca = ca - cash_to_deduct
+            op_cl = cl - debt_to_deduct
+            return float((op_ca - op_cl) / revenue)
         return 0.0
 
     def _forecast_sbc(self, years: int, growth: list[float], base_revenue: float) -> list[float]:

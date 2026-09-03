@@ -74,7 +74,11 @@ def build_bridge(
     # figure. A company with preferred stock outstanding therefore valued at zero
     # preferred, silently, and the line item printed 0 as though that were reported.
     preferred = _resolve(cfg.preferred_equity, field_value(financials, "preferred_equity"), 0.0)
-    investments = _resolve(cfg.investments, float("nan"), 0.0)
+    reported_inv = field_value(financials, "long_term_investments")
+    if cfg.include_investments and pd.notna(reported_inv) and reported_inv > 0:
+        investments = _resolve(cfg.investments, reported_inv, 0.0)
+    else:
+        investments = _resolve(cfg.investments, float("nan"), 0.0)
 
     # Non-operating investments stay config-driven on purpose, and this warns rather
     # than adding them. Whether a long-term securities portfolio is a claim available
@@ -82,16 +86,20 @@ def build_bridge(
     # company -- Apple reports $77.7bn, worth +4.4% on value per share, Microsoft
     # +2.6%. Moving a headline number that far on a field-mapping decision is exactly
     # what this model is supposed to put in front of the analyst rather than do quietly.
-    if cfg.investments is None:
-        reported = field_value(financials, "long_term_investments")
-        if pd.notna(reported) and reported > 0 and enterprise_value > 0:
-            share = reported / enterprise_value
-            if share > 0.01:
+    if (
+        cfg.investments is None
+        and not cfg.include_investments
+        and pd.notna(reported_inv)
+        and reported_inv > 0
+        and enterprise_value > 0
+    ):
+        share = reported_inv / enterprise_value
+        if share > 0.01:
                 warnings.warn(
-                    f"Balance sheet reports {reported:,.0f} of long-term investments "
+                    f"Balance sheet reports {reported_inv:,.0f} of long-term investments "
                     f"({share:.1%} of enterprise value) that the bridge does not count. "
                     f"If they are non-operating they belong in equity value: set "
-                    f"bridge.investments to include them.",
+                    f"bridge.investments or pass --include-investments to include them.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -135,8 +143,15 @@ def base_share_count(financials: Any) -> float:
     grants is layered on separately via `option_overhang_shares` or the dilute method.
     """
     info = info_dict(financials)
-    if info.get("sharesOutstanding"):
-        return float(info["sharesOutstanding"])
+    implied = info.get("impliedSharesOutstanding")
+    basic = info.get("sharesOutstanding")
+    if implied and pd.notna(implied) and float(implied) > 0:
+        if basic and pd.notna(basic) and float(implied) >= float(basic):
+            return float(implied)
+        if not basic or pd.isna(basic):
+            return float(implied)
+    if basic and pd.notna(basic):
+        return float(basic)
 
     ordinary = field_value(financials, "ordinary_shares")
     if pd.notna(ordinary) and ordinary > 0:

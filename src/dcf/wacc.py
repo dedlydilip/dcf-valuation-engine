@@ -110,7 +110,7 @@ class WACCCalculator:
         return rate if 0.0 <= rate < 1.0 else float("nan")
 
     @property
-    def beta(self) -> float:
+    def raw_beta(self) -> float:
         if self._beta is not None:
             return float(self._beta)
         if self._wacc_assumptions.beta_override is not None:
@@ -120,6 +120,28 @@ class WACCCalculator:
         if raw is not None and pd.notna(raw):
             return float(raw)
         return 1.0
+
+    @property
+    def beta(self) -> float:
+        """Levered beta, re-levered via Hamada equation if target capital structure is used."""
+        b = self.raw_beta
+        if self._wacc_assumptions.capital_structure == "target":
+            # Hamada (1972) re-levering:
+            # 1. Unlever raw beta using current capital structure
+            mcap = self.market_cap
+            debt = self.total_debt
+            t = self.tax_rate
+            current_de = (
+                debt / mcap if pd.notna(mcap) and mcap > 0 and pd.notna(debt) and debt >= 0 else 0.0
+            )
+            denom = 1.0 + (1.0 - t) * current_de
+            unlevered_beta = b / denom if denom > 0 else b
+
+            # 2. Re-lever to target capital structure
+            target_wd = self._wacc_assumptions.target_debt_weight
+            target_de = target_wd / (1.0 - target_wd) if target_wd < 1.0 else 0.0
+            return unlevered_beta * (1.0 + (1.0 - t) * target_de)
+        return b
 
     @property
     def market_cap(self) -> float:
@@ -161,13 +183,20 @@ class WACCCalculator:
 
     @property
     def cost_of_equity(self) -> float:
-        """CAPM, plus optional size and country premia. No floor applied."""
-        return (
+        """CAPM, plus optional size and country premia.
+
+        Unfloored by default to preserve raw mathematical CAPM properties (e.g. gold miners
+        with negative beta). If floor_cost_of_equity is set in assumptions, floored at Rf.
+        """
+        coe = (
             self.risk_free_rate
             + self.beta * self.equity_risk_premium
             + self.size_premium
             + self.country_risk_premium
         )
+        if getattr(self._wacc_assumptions, "floor_cost_of_equity", False):
+            return max(coe, self.risk_free_rate)
+        return coe
 
     @property
     def cost_of_debt(self) -> float:
@@ -243,6 +272,7 @@ class WACCCalculator:
             "risk_free_rate": self.risk_free_rate,
             "equity_risk_premium": self.equity_risk_premium,
             "beta": self.beta,
+            "raw_beta": self.raw_beta,
             "size_premium": self.size_premium,
             "country_risk_premium": self.country_risk_premium,
             "cost_of_equity": self.cost_of_equity,

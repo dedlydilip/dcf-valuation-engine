@@ -281,7 +281,11 @@ def compute_multiples(financials: Financials) -> dict[str, float]:
     cash = field_value(financials, "cash", 0.0) + field_value(
         financials, "short_term_investments", 0.0
     )
-    enterprise_value = market_cap + debt - cash
+    pref = field_value(financials, "preferred_equity", 0.0)
+    minority = field_value(financials, "minority_interest", 0.0)
+    pref_val = pref if pd.notna(pref) else 0.0
+    minority_val = minority if pd.notna(minority) else 0.0
+    enterprise_value = market_cap + debt - cash + pref_val + minority_val
 
     revenue = field_value(financials, "revenue")
     ebitda = field_value(financials, "ebitda")
