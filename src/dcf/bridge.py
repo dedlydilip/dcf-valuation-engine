@@ -128,6 +128,23 @@ def build_bridge(
     )
 
 
+def _market_implied_share_count(info: dict[str, Any]) -> float | None:
+    """Total shares across every class, from market capitalisation and price.
+
+    The one figure that must cover the whole company, because market capitalisation
+    does. Returns None when either input is missing rather than guessing.
+    """
+    market_cap = info.get("marketCap")
+    price = info.get("currentPrice")
+    if not market_cap or not price:
+        return None
+    try:
+        total = float(market_cap) / float(price)
+    except (TypeError, ZeroDivisionError):
+        return None
+    return total if total > 0 else None
+
+
 def base_share_count(financials: Any) -> float:
     """Shares outstanding today, which is the denominator a per-share value needs.
 
@@ -145,13 +162,47 @@ def base_share_count(financials: Any) -> float:
     info = info_dict(financials)
     implied = info.get("impliedSharesOutstanding")
     basic = info.get("sharesOutstanding")
-    if implied and pd.notna(implied) and float(implied) > 0:
-        if basic and pd.notna(basic) and float(implied) >= float(basic):
-            return float(implied)
-        if not basic or pd.isna(basic):
-            return float(implied)
-    if basic and pd.notna(basic):
-        return float(basic)
+
+    # Dual-class companies break `sharesOutstanding`.
+    #
+    # Yahoo reports it for the listed class only, while market capitalisation covers
+    # every class -- and the equity value being divided here is the whole company's,
+    # so the denominator has to be every class too. Dividing by one class overstates
+    # value per share by the ratio of the classes:
+    #
+    #   GOOGL  5.867bn reported against 12.230bn total  ->  2.08x overstatement
+    #   NKE    1.202bn against 1.483bn (Class A + B)    ->  $44.05 not $35.70,
+    #                                                        turning -7.9% into +13.6%
+    #   META   2.205bn against 2.548bn
+    #
+    # `marketCap / price` recovers the total, and the balance-sheet "Ordinary Shares
+    # Number" agrees with it on all three. Only trust `sharesOutstanding` when it is
+    # consistent with the market's own arithmetic.
+    market_total = _market_implied_share_count(info)
+    for candidate in (implied, basic):
+        if candidate and pd.notna(candidate) and float(candidate) > 0:
+            count = float(candidate)
+            if market_total is None or abs(count / market_total - 1.0) <= 0.02:
+                return count
+            ordinary = field_value(financials, "ordinary_shares")
+            chosen = (
+                float(ordinary)
+                if pd.notna(ordinary)
+                and ordinary > 0
+                and abs(float(ordinary) / market_total - 1.0) <= 0.02
+                else market_total
+            )
+            warnings.warn(
+                f"Reported share count ({count:,.0f}) disagrees with market "
+                f"capitalisation divided by price ({market_total:,.0f}) by "
+                f"{abs(count / market_total - 1.0):.1%}. For a dual-class company the "
+                f"reported figure covers only the listed class while equity value "
+                f"covers every class, so {chosen:,.0f} is used instead. Set the count "
+                f"explicitly if that is wrong.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return chosen
 
     ordinary = field_value(financials, "ordinary_shares")
     if pd.notna(ordinary) and ordinary > 0:

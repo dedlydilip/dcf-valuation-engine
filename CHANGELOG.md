@@ -3,6 +3,37 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## Dual-class share counts — September 2026
+
+Found by generating a Nike workbook. The share-count basis check added in an earlier
+round warned that `sharesOutstanding` (1.202bn) disagreed with `marketCap / price`
+(1.483bn) by 19%. That check was written for depositary receipts; the actual cause here
+is a dual-class structure, and it was wrong in a way that reverses the conclusion.
+
+Yahoo reports `sharesOutstanding` for the listed class only. Market capitalisation covers
+every class, and so does the equity value a DCF produces -- so dividing the whole
+company's equity by one share class overstates value per share by the ratio between them.
+
+```
+GOOGL  5.867bn reported vs 12.230bn total   $158.36 -> $75.97   (2.08x overstated)
+NKE    1.202bn vs 1.483bn                   $44.05  -> $35.70
+META   2.205bn vs 2.548bn                   $229.28 -> $199.87
+```
+
+**Nike is the one that matters: it read as 13.6% upside and is actually 7.9% downside.**
+The only ticker in the whole fixture set that looked like a buy, and it looked that way
+because it was valued on one class of stock.
+
+Four of the 56 fixtures are affected and all four are dual class. `base_share_count` now
+trusts `sharesOutstanding` only when it agrees with market capitalisation divided by
+price, and otherwise uses the balance-sheet "Ordinary Shares Number" or the
+market-implied total, warning either way. Single-class tickers are untouched -- AAPL,
+MSFT, TSLA and AMZN are unchanged.
+
+Worth noting the guard that caught this was added for a different reason entirely, and
+its message named the wrong cause. It still did its job: the number disagreed with the
+market's own arithmetic, which was enough to make someone look.
+
 ## EBIT definition, and a cross-check that could not fail — September 2026
 
 From a second external review, this one of the Amazon workbook. Four findings, and

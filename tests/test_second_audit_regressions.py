@@ -382,3 +382,66 @@ class TestNonFiniteCellsAreActuallyChecked:
         result = DCFEngine(financials, DCFAssumptions.from_yaml(), ticker="AAPL").run()
         book = ExcelModelBuilder(result=result, financials=financials).workbook()
         assert "Summary" in book.sheetnames
+
+
+class TestDualClassShareCount:
+    """`sharesOutstanding` covers the listed class only; equity value covers all of them.
+
+    Found by generating a Nike workbook: the share-count basis check warned that
+    `sharesOutstanding` (1.202bn) disagreed with `marketCap / price` (1.483bn) by 19%.
+    Nike is dual class -- Yahoo reports Class B, market capitalisation covers A and B --
+    and the DCF's equity value belongs to every class, so dividing by one of them
+    overstates value per share by the ratio between them.
+
+        GOOGL  5.867bn reported vs 12.230bn total   $158.36 -> $75.97
+        NKE    1.202bn vs 1.483bn                   $44.05  -> $35.70
+        META   2.205bn vs 2.548bn                   $229.28 -> $199.87
+
+    Nike is the one that matters: it reverses the conclusion, from 13.6% upside to
+    7.9% downside. Four of the 56 fixtures are affected and all four are dual class.
+    """
+
+    @staticmethod
+    def _run(ticker: str):
+        warnings.simplefilter("ignore")
+        financials = YFinanceClient(ticker, offline_mode=True).get_financials()
+        return DCFEngine(
+            financials, DCFAssumptions.from_yaml(), ticker=ticker
+        ).run(), financials
+
+    @pytest.mark.parametrize(
+        "ticker,expected", [("NKE", 35.70), ("GOOGL", 76.86), ("META", 199.87)]
+    )
+    def test_dual_class_uses_the_total_share_count(self, ticker, expected):
+        result, _ = self._run(ticker)
+        assert result.value_per_share == pytest.approx(expected, abs=0.05)
+
+    @pytest.mark.parametrize("ticker", ["NKE", "GOOGL", "META"])
+    def test_the_denominator_matches_market_capitalisation(self, ticker):
+        """The invariant: equity value covers the whole company, so the count must too."""
+        result, financials = self._run(ticker)
+        info = financials.info
+        market_total = info["marketCap"] / info["currentPrice"]
+        assert result.bridge.shares == pytest.approx(market_total, rel=0.02), (
+            f"{ticker} divides equity value by {result.bridge.shares:,.0f} shares while "
+            f"the market prices {market_total:,.0f} -- one share class against all of them"
+        )
+
+    def test_nike_is_not_a_buy(self):
+        """The reversal, pinned. It read as 13.6% upside on one class of stock."""
+        result, _ = self._run("NKE")
+        assert result.bridge.upside < 0
+
+    @pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "TSLA"])
+    def test_single_class_companies_are_untouched(self, ticker):
+        result, financials = self._run(ticker)
+        assert result.bridge.shares == pytest.approx(
+            financials.info["sharesOutstanding"], rel=0.02
+        )
+
+    def test_a_disagreeing_count_warns(self):
+        from src.dcf.bridge import base_share_count
+
+        financials = YFinanceClient("NKE", offline_mode=True).get_financials()
+        with pytest.warns(UserWarning, match="dual-class"):
+            base_share_count(financials)
