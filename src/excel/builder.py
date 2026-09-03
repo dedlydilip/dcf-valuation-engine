@@ -712,9 +712,19 @@ class ExcelModelBuilder:
             "The cross-check that catches a multiple applied without thinking: every exit "
             "multiple asserts a perpetuity growth rate, and it has to be believable."
         )
+        # Mirror the engine's fallback, not just the configured preference.
+        #
+        # `TerminalValue.select` walks its preference order and skips any method whose
+        # value is not positive. The workbook branched on the configured method alone,
+        # so when Gordon went negative -- Tesla, once EBIT is taken from operating
+        # income and year-5 free cash flow turns negative -- Python fell back to the
+        # exit multiple and reported $36.09 while the workbook carried the negative
+        # Gordon figure and reported $7.19. An 80% disagreement between the two halves
+        # of the same model.
         selected = cur.label_value(
             "Terminal value used",
-            f'=IF({r["tv_pref"]}="exit_multiple",{exit_tv},{gordon})',
+            f'=IF({r["tv_pref"]}="exit_multiple",{exit_tv},'
+            f"IF({gordon}>0,{gordon},{exit_tv}))",
             S.MONEY_MM,
             key="tv_used",
             kind="total",
@@ -722,9 +732,13 @@ class ExcelModelBuilder:
         # The discount period depends on what the terminal value IS. Gordon is a
         # perpetuity of flows and inherits the mid-year convention; an exit multiple is
         # a sale price at the end of year N and discounts at the full N.
+        # The discount period follows whichever method actually carried the value, so
+        # the fallback has to be reflected here too: a Gordon figure that lost out to
+        # the exit multiple must not keep Gordon's mid-year discounting.
+        using_exit = f'OR({r["tv_pref"]}="exit_multiple",{gordon}<=0)'
         pv_tv = cur.label_value(
             "PV of terminal value",
-            f'=IF({r["tv_pref"]}="exit_multiple",'
+            f"=IF({using_exit},"
             f"{selected}/(1+{r['wacc']})^{last_letter}{idx_row},"
             f"{selected}/(1+{r['wacc']})^{last_letter}{exp_row})",
             S.MONEY_MM,
@@ -874,10 +888,17 @@ class ExcelModelBuilder:
         # the base case while still presenting itself as centred on it.
         for j, delta in enumerate(cfg.growth_deltas):
             sign = "+" if delta >= 0 else "-"
+            # `r["g"]` is the perpetuity growth input. `r["growth"]` is the revenue
+            # growth *series*, whose base column is deliberately blank -- pointing the
+            # axis there evaluated to 0 and produced a grid running from -1.0% to +1.0%
+            # perpetuity growth whose centre cell no longer matched the model's own
+            # answer. Introduced while converting these labels from literals, and the
+            # test written alongside only checked that the formula referenced some
+            # sheet, not that it referenced the right cell.
             c = ws.cell(
                 row=header_row,
                 column=2 + j,
-                value=f"={r['growth']}{sign}{abs(delta)}",
+                value=f"={r['g']}{sign}{abs(delta)}",
             )
             c.font, c.fill, c.number_format = S.HEADER_FONT, S.HEADER_FILL, S.PERCENT_2
         cur.row += 1

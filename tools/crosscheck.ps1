@@ -47,21 +47,28 @@ function Get-GridHeaderRow($sheet, $corner) {
 }
 
 function Compare-Value($name, $excelValue, $pythonValue, $tolerance) {
+    # Messages go to the HOST, never the output stream.
+    #
+    # PowerShell returns everything a function writes, not just its final expression.
+    # With Write-Output here, a mismatch returned @("...message...", $false) -- an
+    # array, which is truthy -- so `if (-not (Compare-Value ...))` never fired and the
+    # script reported PASS while printing an 80% disagreement two lines above. The
+    # cross-check could not fail. Write-Host keeps the return value a bare boolean.
     if ($null -eq $excelValue) {
-        Write-Output ("    {0}: not found in the workbook - the comparison did not run" -f $name)
+        Write-Host ("    {0}: not found in the workbook - the comparison did not run" -f $name) -ForegroundColor Red
         return $false
     }
     if ($pythonValue -eq 0) {
         # Never skip silently: a zero expected value still has to be matched.
         if ([Math]::Abs($excelValue) -gt 1e-6) {
-            Write-Output ("    {0} mismatch: python 0  excel {1:N4}" -f $name, $excelValue)
+            Write-Host ("    {0} mismatch: python 0  excel {1:N4}" -f $name, $excelValue) -ForegroundColor Red
             return $false
         }
         return $true
     }
     $d = [Math]::Abs($excelValue / $pythonValue - 1)
     if ($d -gt $tolerance) {
-        Write-Output ("    {0} mismatch: python {1:N4}  excel {2:N4}  ({3:P4})" -f $name, $pythonValue, $excelValue, $d)
+        Write-Host ("    {0} mismatch: python {1:N4}  excel {2:N4}  ({3:P4})" -f $name, $pythonValue, $excelValue, $d) -ForegroundColor Red
         return $false
     }
     return $true

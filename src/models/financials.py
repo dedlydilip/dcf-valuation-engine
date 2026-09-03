@@ -29,7 +29,20 @@ FIELD_MAP: dict[str, list[str]] = {
     "sga": ["Selling General And Administration"],
     "rnd": ["Research And Development"],
     "operating_income": ["Operating Income", "Total Operating Income As Reported"],
-    "ebit": ["EBIT", "Operating Income"],
+    # Operating income FIRST. Yahoo's "EBIT" row is pretax income plus interest
+    # expense, which sweeps interest income, equity-method marks and every other
+    # non-operating item into what an unlevered DCF treats as operating profit --
+    # and then the cash generating that interest is added back whole in the equity
+    # bridge, so it is counted twice.
+    #
+    # On Amazon FY2025 the two differ by 24.5%: operating income 79,975 against an
+    # "EBIT" of 99,585, which is exactly pretax 97,311 + interest 2,274. FY2022 is
+    # starker still -- "EBIT" of -3,569 against operating income of +12,248, the
+    # Rivian writedown landing in an operating line.
+    #
+    # This survived three audits because Apple is the one sample ticker where the two
+    # rows are identical (0.0% gap). MSFT differs by 8.9%, TSLA 15.8%, GOOGL 23.7%.
+    "ebit": ["Operating Income", "Total Operating Income As Reported", "EBIT"],
     "ebitda": ["EBITDA", "Normalized EBITDA"],
     "interest_expense": ["Interest Expense", "Interest Expense Non Operating"],
     "pretax_income": ["Pretax Income"],

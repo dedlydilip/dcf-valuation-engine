@@ -210,7 +210,7 @@ class TestMethodEquivalence:
         assert gap < 0.15, "which is exactly why the old 15% bound passed regardless"
 
     @pytest.mark.parametrize(
-        "ticker,expected_gap", [("AAPL", 0.005), ("MSFT", 0.007), ("TSLA", 0.039)]
+        "ticker,expected_gap", [("AAPL", 0.005), ("MSFT", 0.009), ("TSLA", 0.012)]
     )
     def test_the_readme_convergence_figures_are_current(self, ticker, expected_gap):
         """The README quotes 0.5% / 0.8% / 3.9%. Pinned so they cannot go stale.

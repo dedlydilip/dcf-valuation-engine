@@ -80,7 +80,7 @@ def test_moat_analysis_value_destructive_trigger(aapl_financials):
 
 @pytest.mark.parametrize(
     "ticker,expected_roic",
-    [("AAPL", 0.609719), ("MSFT", 0.276576), ("TSLA", 0.049138)],
+    [("AAPL", 0.609719), ("MSFT", 0.254075), ("TSLA", 0.042427)],
 )
 def test_roic_is_pinned_not_merely_positive(ticker, expected_roic):
     """Kills the constant-ROIC mutant that the original assertions survived."""

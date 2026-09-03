@@ -305,7 +305,7 @@ class TestBridgeInputsAreSourced:
     def test_the_sample_valuations_did_not_move(self):
         """This whole stage must be a no-op on the committed fixtures."""
         warnings.simplefilter("ignore")
-        expected = {"AAPL": 120.08, "MSFT": 188.99, "TSLA": 8.86}
+        expected = {"AAPL": 120.08, "MSFT": 165.06, "TSLA": 28.63}
         for ticker, value in expected.items():
             financials = YFinanceClient(ticker, offline_mode=True).get_financials()
             result = DCFEngine(

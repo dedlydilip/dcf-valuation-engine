@@ -385,3 +385,43 @@ class TestSensitivityAgreesWithTheDCFSheet:
         assert all("WACC!" in v or "Inputs!" in v for v in axis_values), (
             f"axis formulas must reference the live WACC cell: {axis_values[:3]}"
         )
+
+    def test_growth_axis_points_at_the_perpetuity_growth_input(self, workbook):
+        """Referencing *a* cell is not enough; it has to be the right one.
+
+        Converting these labels from literals to formulas, the growth axis was pointed
+        at `refs["growth"]` -- the revenue-growth *series*, whose base column is blank
+        by design -- instead of `refs["g"]`, the perpetuity growth rate. The axis then
+        evaluated to 0 and the grid ran from -1.0% to +1.0% perpetuity growth, so its
+        centre cell no longer reproduced the model's own answer and the table quoted
+        valuations at negative terminal growth.
+
+        The test written alongside that change asserted only that the formula mentioned
+        "Inputs!" or "WACC!", which the broken reference did. This checks the target.
+        """
+        book, result, _ = workbook
+        sheet = book["Sensitivity"]
+        inputs = book["Inputs"]
+
+        header = None
+        for row in sheet.iter_rows(min_col=1, max_col=1):
+            if row[0].value == "WACC \\ growth":
+                header = row[0].row
+        assert header, "perpetuity-growth grid not found"
+
+        formula = sheet.cell(row=header, column=2).value
+        assert isinstance(formula, str) and formula.startswith("=")
+
+        target = formula.lstrip("=").split("+")[0].split("-")[0].strip()
+        cell_ref = target.split("!")[-1].replace("$", "")
+        assert inputs[cell_ref].value is not None, (
+            f"the growth axis points at {target}, which is empty -- the axis evaluates "
+            f"to zero and the grid stops bracketing the base case"
+        )
+        assert inputs[cell_ref].value == pytest.approx(
+            result.assumptions.terminal.perpetuity_growth
+        ), (
+            f"the growth axis must reference the perpetuity growth rate "
+            f"({result.assumptions.terminal.perpetuity_growth:.4f}), not "
+            f"{inputs[cell_ref].value!r} at {target}"
+        )

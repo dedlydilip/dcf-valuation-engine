@@ -3,6 +3,80 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## EBIT definition, and a cross-check that could not fail — September 2026
+
+From a second external review, this one of the Amazon workbook. Four findings, and
+chasing them turned up two more in the verification itself.
+
+**Headline numbers moved, and they were wrong before.** AAPL $120.08 (unchanged),
+MSFT $188.99 -> $165.06, TSLA $8.86 -> $36.09, AMZN $59.38 -> $39.59.
+
+### Fixed — EBIT was pretax income plus interest, not operating income
+
+`FIELD_MAP` preferred Yahoo's "EBIT" row over "Operating Income". That row is
+`pretax + interest expense`, which sweeps interest income, equity-method marks and every
+other non-operating item into what an unlevered DCF treats as operating profit. The cash
+generating that interest income is then added back whole in the equity bridge, so it is
+counted twice.
+
+Amazon FY2025: operating income 79,975 against an "EBIT" of 99,585, which is exactly
+pretax 97,311 + interest 2,274 -- an 11.16% operating margin reported as 13.89%. FY2022
+is starker: "EBIT" of -3,569 against operating income of +12,248, the Rivian writedown
+landing in an operating line.
+
+**This survived three audits because Apple is the one sample ticker where the two rows
+are identical.** Gap by ticker: AAPL 0.0%, NVDA 8.7%, MSFT 8.9%, TSLA 15.8%, GOOGL 23.7%,
+AMZN 24.5%. The model was validated against the single company where the defect is
+invisible.
+
+### Fixed — the cross-check could not report a failure
+
+Found while checking the fix. `Compare-Value` in `crosscheck.ps1` wrote its mismatch
+message with `Write-Output`. PowerShell returns everything a function writes, so a
+failing comparison returned `@("...message...", $false)` -- an array, which is truthy --
+and `if (-not (Compare-Value ...))` never fired.
+
+The script printed `TSLA 36.0925 | 7.1883 | 80.084% | PASS` and then
+`CROSS-CHECK PASSED: 324 comparisons`. Every "324 comparisons pass" reported in this
+changelog was produced by a script that could not fail. Messages now go to the host, so
+the return value is a bare boolean.
+
+### Fixed — the workbook could not follow the engine's terminal-method fallback
+
+Which is what the repaired cross-check immediately caught. `TerminalValue.select` skips
+any method whose value is not positive; the workbook branched on the *configured* method
+alone. With Tesla's year-5 free cash flow now negative, Gordon goes negative, Python falls
+back to the exit multiple and reports $36.09 while the workbook carried the negative
+Gordon figure and reported $7.19 -- an 80% disagreement between two halves of one model.
+Both the selection and the discount period now mirror the fallback. TSLA agrees to 0.000%.
+
+### Fixed — the growth sensitivity axis pointed at an empty cell
+
+**Introduced in the previous commit.** Converting the axis labels from literals to
+formulas, the growth axis was pointed at `refs["growth"]` -- the revenue-growth series,
+whose base column is blank by design -- instead of `refs["g"]`, the perpetuity growth
+rate. The axis evaluated to zero, so the grid ran from -1.0% to +1.0% perpetuity growth,
+its centre cell no longer reproduced the model's own answer, and the table quoted
+valuations at negative terminal growth.
+
+The test written alongside that change asserted only that the formula mentioned "Inputs!"
+or "WACC!" -- which the broken reference did. It now checks the cell it points at is
+non-empty and equals the perpetuity growth rate.
+
+### Consequences worth stating
+
+Tesla is now degenerate rather than merely pessimistic: year-5 free cash flow is negative,
+so terminal value is 100% of enterprise value and the scenario ordering can invert,
+because Gordon and the exit multiple do not respond to growth in the same direction. Two
+integration tests now assert the ordering only where a single terminal method carries
+every scenario, and require the degeneracy to be warned about where it does not. The model
+already emits four warnings on that run, including "the terminal value is 100% of
+enterprise value".
+
+Normalising terminal capex resolves it -- `--fade-capex` moves TSLA to $16.07 with a
+usable Gordon and 75.6% TV, and AMZN to $76.41. It is left opt-in: the README's stated
+position is that the model flags the reinvestment gap and does not overrule the forecast.
+
 ## External workbook review — September 2026
 
 An outside review of the generated Excel found eight defects. Six were real, one was
