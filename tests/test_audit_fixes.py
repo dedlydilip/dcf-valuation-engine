@@ -49,12 +49,17 @@ def test_cost_of_equity_floor():
     """Verify that cost of equity is floored at the risk-free rate when floor_cost_of_equity is True."""
     financials = pd.DataFrame({"ebit": [100.0], "total_debt": [0.0]})
     # Negative beta: Rf = 4.2%, ERP = 5.5%, Beta = -1.0 -> Unfloored CAPM = -1.3%
-    wacc_unfloored = WACCAssumptions(risk_free_rate=0.042, equity_risk_premium=0.055, beta_override=-1.0)
+    wacc_unfloored = WACCAssumptions(
+        risk_free_rate=0.042, equity_risk_premium=0.055, beta_override=-1.0
+    )
     calc_unfloored = WACCCalculator(financials, assumptions=wacc_unfloored)
     assert calc_unfloored.cost_of_equity < 0.0
 
     wacc_floored = WACCAssumptions(
-        risk_free_rate=0.042, equity_risk_premium=0.055, beta_override=-1.0, floor_cost_of_equity=True
+        risk_free_rate=0.042,
+        equity_risk_premium=0.055,
+        beta_override=-1.0,
+        floor_cost_of_equity=True,
     )
     calc_floored = WACCCalculator(financials, assumptions=wacc_floored)
     assert calc_floored.cost_of_equity == pytest.approx(0.042)

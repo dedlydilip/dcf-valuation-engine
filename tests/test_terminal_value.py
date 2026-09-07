@@ -59,9 +59,7 @@ class TestMultipleDecay:
 
     def test_never_goes_negative(self):
         """The failure mode of the naive multiplicative formula."""
-        multiple, _ = _tv(decay_turns_per_pp=20.0).dynamic_exit_multiple(
-            year5_revenue_growth=-0.50
-        )
+        multiple, _ = _tv(decay_turns_per_pp=20.0).dynamic_exit_multiple(year5_revenue_growth=-0.50)
         assert multiple > 0
 
     def test_thin_peer_set_falls_back_to_static(self):
@@ -83,9 +81,7 @@ class TestMultipleDecay:
 
 class TestNegativeEbitda:
     def test_exit_multiple_is_undefined(self):
-        result = _tv().exit_multiple_value(
-            terminal_ebitda=-500.0, year5_revenue_growth=0.03
-        )
+        result = _tv().exit_multiple_value(terminal_ebitda=-500.0, year5_revenue_growth=0.03)
         assert not result.ok
         assert "no meaning" in result.warnings[0]
 

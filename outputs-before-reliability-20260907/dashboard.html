@@ -1,38 +1,15 @@
-"""Dashboard generation module for multi-company valuation.
-
-Renders both a rich terminal summary table and an interactive standalone HTML
-dashboard equipped with dynamic scenario sliders, economic moat diagnostics,
-reverse DCF expectations, and Margin of Safety buy targets.
-"""
-
-from __future__ import annotations
-
-import json
-from pathlib import Path
-from typing import Any
-
-
-def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
-    """Write an interactive standalone HTML dashboard with embedded data."""
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    from src.models.provenance import json_safe
-
-    json_payload = json.dumps(json_safe(data), indent=2, allow_nan=False).replace("<", "\\u003c")
-
-    html_content = f"""<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DCF & Valuation Engine Dashboard</title>
   <style>
-    body {{
+    body {
       background-color: #0b0f19;
       color: #f1f5f9;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }}
+    }
     /* ------------------------------------------------------------------
        Self-contained utility CSS.
 
@@ -48,154 +25,154 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
        is speculative -- `tests/test_dashboard.py` renders the page and fails if
        the markup ever uses a class this stylesheet does not define.
        ------------------------------------------------------------------ */
-    *, *::before, *::after {{ box-sizing: border-box; }}
-    body {{ margin: 0; }}
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; }
 
     /* layout */
-    .block {{ display: block; }}
-    .flex {{ display: flex; }}
-    .grid {{ display: grid; }}
-    .flex-col {{ flex-direction: column; }}
-    .items-center {{ align-items: center; }}
-    .items-start {{ align-items: flex-start; }}
-    .items-baseline {{ align-items: baseline; }}
-    .justify-between {{ justify-content: space-between; }}
-    .grid-cols-1 {{ grid-template-columns: repeat(1, minmax(0, 1fr)); }}
-    .grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-    .grid-cols-5 {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
-    .w-full {{ width: 100%; }}
-    .w-3 {{ width: 0.75rem; }}
-    .h-3 {{ height: 0.75rem; }}
-    .h-1\\.5 {{ height: 0.375rem; }}
-    .max-w-6xl {{ max-width: 72rem; }}
-    .min-h-screen {{ min-height: 100vh; }}
-    .mx-auto {{ margin-left: auto; margin-right: auto; }}
-    .overflow-hidden {{ overflow: hidden; }}
-    .overflow-x-auto {{ overflow-x: auto; }}
+    .block { display: block; }
+    .flex { display: flex; }
+    .grid { display: grid; }
+    .flex-col { flex-direction: column; }
+    .items-center { align-items: center; }
+    .items-start { align-items: flex-start; }
+    .items-baseline { align-items: baseline; }
+    .justify-between { justify-content: space-between; }
+    .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+    .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .w-full { width: 100%; }
+    .w-3 { width: 0.75rem; }
+    .h-3 { height: 0.75rem; }
+    .h-1\.5 { height: 0.375rem; }
+    .max-w-6xl { max-width: 72rem; }
+    .min-h-screen { min-height: 100vh; }
+    .mx-auto { margin-left: auto; margin-right: auto; }
+    .overflow-hidden { overflow: hidden; }
+    .overflow-x-auto { overflow-x: auto; }
 
     /* spacing */
-    .p-2 {{ padding: 0.5rem; }}
-    .p-2\\.5 {{ padding: 0.625rem; }}
-    .p-3 {{ padding: 0.75rem; }}
-    .p-3\\.5 {{ padding: 0.875rem; }}
-    .p-4 {{ padding: 1rem; }}
-    .p-5 {{ padding: 1.25rem; }}
-    .p-6 {{ padding: 1.5rem; }}
-    .px-2 {{ padding-left: 0.5rem; padding-right: 0.5rem; }}
-    .px-2\\.5 {{ padding-left: 0.625rem; padding-right: 0.625rem; }}
-    .px-3 {{ padding-left: 0.75rem; padding-right: 0.75rem; }}
-    .px-4 {{ padding-left: 1rem; padding-right: 1rem; }}
-    .py-1 {{ padding-top: 0.25rem; padding-bottom: 0.25rem; }}
-    .py-1\\.5 {{ padding-top: 0.375rem; padding-bottom: 0.375rem; }}
-    .py-3 {{ padding-top: 0.75rem; padding-bottom: 0.75rem; }}
-    .py-3\\.5 {{ padding-top: 0.875rem; padding-bottom: 0.875rem; }}
-    .pt-1 {{ padding-top: 0.25rem; }}
-    .pt-2 {{ padding-top: 0.5rem; }}
-    .pt-3 {{ padding-top: 0.75rem; }}
-    .mb-1 {{ margin-bottom: 0.25rem; }}
-    .mt-1 {{ margin-top: 0.25rem; }}
-    .mt-0\\.5 {{ margin-top: 0.125rem; }}
-    .gap-1\\.5 {{ gap: 0.375rem; }}
-    .gap-2 {{ gap: 0.5rem; }}
-    .gap-2\\.5 {{ gap: 0.625rem; }}
-    .gap-3 {{ gap: 0.75rem; }}
-    .gap-4 {{ gap: 1rem; }}
-    .gap-6 {{ gap: 1.5rem; }}
-    .space-y-1 > * + * {{ margin-top: 0.25rem; }}
-    .space-y-2 > * + * {{ margin-top: 0.5rem; }}
-    .space-y-3 > * + * {{ margin-top: 0.75rem; }}
-    .space-y-4 > * + * {{ margin-top: 1rem; }}
-    .space-y-6 > * + * {{ margin-top: 1.5rem; }}
+    .p-2 { padding: 0.5rem; }
+    .p-2\.5 { padding: 0.625rem; }
+    .p-3 { padding: 0.75rem; }
+    .p-3\.5 { padding: 0.875rem; }
+    .p-4 { padding: 1rem; }
+    .p-5 { padding: 1.25rem; }
+    .p-6 { padding: 1.5rem; }
+    .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+    .px-2\.5 { padding-left: 0.625rem; padding-right: 0.625rem; }
+    .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+    .px-4 { padding-left: 1rem; padding-right: 1rem; }
+    .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+    .py-1\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+    .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+    .py-3\.5 { padding-top: 0.875rem; padding-bottom: 0.875rem; }
+    .pt-1 { padding-top: 0.25rem; }
+    .pt-2 { padding-top: 0.5rem; }
+    .pt-3 { padding-top: 0.75rem; }
+    .mb-1 { margin-bottom: 0.25rem; }
+    .mt-1 { margin-top: 0.25rem; }
+    .mt-0\.5 { margin-top: 0.125rem; }
+    .gap-1\.5 { gap: 0.375rem; }
+    .gap-2 { gap: 0.5rem; }
+    .gap-2\.5 { gap: 0.625rem; }
+    .gap-3 { gap: 0.75rem; }
+    .gap-4 { gap: 1rem; }
+    .gap-6 { gap: 1.5rem; }
+    .space-y-1 > * + * { margin-top: 0.25rem; }
+    .space-y-2 > * + * { margin-top: 0.5rem; }
+    .space-y-3 > * + * { margin-top: 0.75rem; }
+    .space-y-4 > * + * { margin-top: 1rem; }
+    .space-y-6 > * + * { margin-top: 1.5rem; }
 
     /* borders */
-    .border {{ border: 1px solid #1e293b; }}
-    .border-t {{ border-top: 1px solid #1e293b; }}
-    .border-b {{ border-bottom: 1px solid #1e293b; }}
-    .border-slate-800 {{ border-color: #1e293b; }}
-    .divide-y > * + * {{ border-top: 1px solid #1e293b; }}
-    .divide-slate-800\\/80 > * + * {{ border-top-color: rgba(30, 41, 59, 0.8); }}
-    .rounded {{ border-radius: 0.25rem; }}
-    .rounded-lg {{ border-radius: 0.5rem; }}
-    .rounded-xl {{ border-radius: 0.75rem; }}
-    .rounded-2xl {{ border-radius: 1rem; }}
-    .rounded-full {{ border-radius: 9999px; }}
+    .border { border: 1px solid #1e293b; }
+    .border-t { border-top: 1px solid #1e293b; }
+    .border-b { border-bottom: 1px solid #1e293b; }
+    .border-slate-800 { border-color: #1e293b; }
+    .divide-y > * + * { border-top: 1px solid #1e293b; }
+    .divide-slate-800\/80 > * + * { border-top-color: rgba(30, 41, 59, 0.8); }
+    .rounded { border-radius: 0.25rem; }
+    .rounded-lg { border-radius: 0.5rem; }
+    .rounded-xl { border-radius: 0.75rem; }
+    .rounded-2xl { border-radius: 1rem; }
+    .rounded-full { border-radius: 9999px; }
 
     /* colour */
-    .bg-slate-900 {{ background-color: #0f172a; }}
-    .bg-slate-950 {{ background-color: #020617; }}
-    .bg-emerald-500 {{ background-color: #10b981; }}
+    .bg-slate-900 { background-color: #0f172a; }
+    .bg-slate-950 { background-color: #020617; }
+    .bg-emerald-500 { background-color: #10b981; }
     /* Applied by JS to the selected company button. Missing these left the active
        button with the browser's default white background and near-white text --
        invisible. Static-markup scanning alone does not find them. */
-    .bg-blue-600 {{ background-color: #2563eb; }}
-    .border-blue-500 {{ border-color: #3b82f6; }}
-    .shadow-lg {{ box-shadow: 0 10px 15px -3px rgba(0,0,0,0.35), 0 4px 6px -4px rgba(0,0,0,0.35); }}
-    .hover\\:text-white:hover {{ color: #ffffff; }}
-    .text-white {{ color: #ffffff; }}
-    .text-slate-400 {{ color: #94a3b8; }}
-    .text-emerald-400 {{ color: #34d399; }}
-    .text-red-400 {{ color: #f87171; }}
-    .text-blue-400 {{ color: #60a5fa; }}
-    .text-amber-400 {{ color: #fbbf24; }}
+    .bg-blue-600 { background-color: #2563eb; }
+    .border-blue-500 { border-color: #3b82f6; }
+    .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.35), 0 4px 6px -4px rgba(0,0,0,0.35); }
+    .hover\:text-white:hover { color: #ffffff; }
+    .text-white { color: #ffffff; }
+    .text-slate-400 { color: #94a3b8; }
+    .text-emerald-400 { color: #34d399; }
+    .text-red-400 { color: #f87171; }
+    .text-blue-400 { color: #60a5fa; }
+    .text-amber-400 { color: #fbbf24; }
 
     /* type */
-    .text-\\[10px\\] {{ font-size: 10px; line-height: 1.4; }}
-    .text-\\[11px\\] {{ font-size: 11px; line-height: 1.4; }}
-    .text-xs {{ font-size: 0.75rem; line-height: 1rem; }}
-    .text-sm {{ font-size: 0.875rem; line-height: 1.25rem; }}
-    .text-base {{ font-size: 1rem; line-height: 1.5rem; }}
-    .text-lg {{ font-size: 1.125rem; line-height: 1.75rem; }}
-    .text-xl {{ font-size: 1.25rem; line-height: 1.75rem; }}
-    .text-2xl {{ font-size: 1.5rem; line-height: 2rem; }}
-    .font-semibold {{ font-weight: 600; }}
-    .font-bold {{ font-weight: 700; }}
-    .font-mono {{ font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }}
-    .text-left {{ text-align: left; }}
-    .text-center {{ text-align: center; }}
-    .uppercase {{ text-transform: uppercase; }}
-    .tracking-tight {{ letter-spacing: -0.015em; }}
-    .tracking-wider {{ letter-spacing: 0.05em; }}
-    .antialiased {{ -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }}
+    .text-\[10px\] { font-size: 10px; line-height: 1.4; }
+    .text-\[11px\] { font-size: 11px; line-height: 1.4; }
+    .text-xs { font-size: 0.75rem; line-height: 1rem; }
+    .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+    .text-base { font-size: 1rem; line-height: 1.5rem; }
+    .text-lg { font-size: 1.125rem; line-height: 1.75rem; }
+    .text-xl { font-size: 1.25rem; line-height: 1.75rem; }
+    .text-2xl { font-size: 1.5rem; line-height: 2rem; }
+    .font-semibold { font-weight: 600; }
+    .font-bold { font-weight: 700; }
+    .font-mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+    .text-left { text-align: left; }
+    .text-center { text-align: center; }
+    .uppercase { text-transform: uppercase; }
+    .tracking-tight { letter-spacing: -0.015em; }
+    .tracking-wider { letter-spacing: 0.05em; }
+    .antialiased { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
     /* interaction */
-    .cursor-pointer {{ cursor: pointer; }}
-    .appearance-none {{ appearance: none; -webkit-appearance: none; }}
-    .shadow-xl {{ box-shadow: 0 20px 25px -5px rgba(0,0,0,0.35), 0 8px 10px -6px rgba(0,0,0,0.35); }}
-    .transition-all {{ transition: all 0.15s ease-in-out; }}
-    .transition-colors {{ transition: background-color 0.15s ease-in-out, color 0.15s ease-in-out, border-color 0.15s ease-in-out; }}
-    .hover\\:bg-slate-950:hover {{ background-color: #020617; }}
-    .hover\\:underline:hover {{ text-decoration: underline; }}
+    .cursor-pointer { cursor: pointer; }
+    .appearance-none { appearance: none; -webkit-appearance: none; }
+    .shadow-xl { box-shadow: 0 20px 25px -5px rgba(0,0,0,0.35), 0 8px 10px -6px rgba(0,0,0,0.35); }
+    .transition-all { transition: all 0.15s ease-in-out; }
+    .transition-colors { transition: background-color 0.15s ease-in-out, color 0.15s ease-in-out, border-color 0.15s ease-in-out; }
+    .hover\:bg-slate-950:hover { background-color: #020617; }
+    .hover\:underline:hover { text-decoration: underline; }
 
-    @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.45; }} }}
-    .animate-pulse {{ animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }}
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+    .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 
     /* responsive: sm = 640px, lg = 1024px */
-    @media (min-width: 640px) {{
-      .sm\\:p-8 {{ padding: 2rem; }}
-      .sm\\:flex-row {{ flex-direction: row; }}
-      .sm\\:items-center {{ align-items: center; }}
-      .sm\\:text-sm {{ font-size: 0.875rem; line-height: 1.25rem; }}
-      .sm\\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .sm\\:grid-cols-3 {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
-    }}
-    @media (min-width: 1024px) {{
-      .lg\\:grid-cols-3 {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
-      .lg\\:col-span-1 {{ grid-column: span 1 / span 1; }}
-      .lg\\:col-span-2 {{ grid-column: span 2 / span 2; }}
-    }}
+    @media (min-width: 640px) {
+      .sm\:p-8 { padding: 2rem; }
+      .sm\:flex-row { flex-direction: row; }
+      .sm\:items-center { align-items: center; }
+      .sm\:text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+      .sm\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .sm\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1024px) {
+      .lg\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .lg\:col-span-1 { grid-column: span 1 / span 1; }
+      .lg\:col-span-2 { grid-column: span 2 / span 2; }
+    }
 
-    .badge {{
+    .badge {
       display: inline-flex;
       align-items: center;
       padding: 0.2rem 0.6rem;
       border-radius: 9999px;
       font-size: 0.75rem;
       font-weight: 600;
-    }}
-    .badge-green {{ background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.3); }}
-    .badge-amber {{ background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }}
-    .badge-red {{ background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }}
-    .badge-blue {{ background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }}
+    }
+    .badge-green { background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.3); }
+    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-red { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-blue { background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
   </style>
 </head>
 <body class="antialiased p-4 sm:p-8 min-h-screen">
@@ -208,14 +185,13 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
           <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
           <h1 class="text-2xl font-bold tracking-tight text-white">DCF Valuation Engine Dashboard</h1>
         </div>
-        <p class="text-slate-400 text-sm mt-1">Multi-lens valuation: Intrinsic DCF, Accounting Capital Efficiency, Reverse Expectations, and Margin of Safety.</p>
+        <p class="text-slate-400 text-sm mt-1">Multi-lens valuation: Intrinsic DCF, Economic Moat, Reverse Expectations, and Margin of Safety.</p>
       </div>
       <div class="flex items-center gap-2 text-xs text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 font-mono">
-        <span>Scenario analysis • Unverified forecast assumptions</span>
+        <span>Audited Engine • Offline • Standalone Report</span>
       </div>
     </div>
 
-    <div id="modelWarnings" class="text-xs text-amber-400 bg-slate-900 p-4 rounded-lg"></div>
     <!-- Comparative Table -->
     <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
       <div class="p-5 border-b border-slate-800 flex justify-between items-center">
@@ -322,18 +298,18 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
         </div>
       </div>
 
-      <!-- Right Columns: Moat, Reverse DCF, and Illustrative Discount Levels -->
+      <!-- Right Columns: Moat, Reverse DCF, and Buy Targets -->
       <div class="lg:col-span-2 space-y-6">
 
         <!-- 2 Grid Cards -->
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-          <!-- Accounting Capital Efficiency Card -->
+          <!-- Economic Moat Card -->
           <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-3">
             <div class="flex justify-between items-start">
               <div>
                 <span class="text-xs uppercase font-semibold tracking-wider text-slate-400">Capital Efficiency</span>
-                <h4 class="text-base font-bold text-white mt-0.5">Accounting Capital Efficiency (ROIC)</h4>
+                <h4 class="text-base font-bold text-white mt-0.5">Economic Moat (ROIC)</h4>
               </div>
               <span id="badgeMoat" class="badge badge-green">Wide Moat</span>
             </div>
@@ -423,28 +399,168 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
   </div>
 
   <script>
-    const data = {json_payload};
+    const data = {
+  "AAPL": {
+    "ticker": "AAPL",
+    "current_price": 319.7,
+    "currency": "USD",
+    "base_value": 120.08439792432496,
+    "bear_value": 82.75840003863895,
+    "bull_value": 165.828740752445,
+    "upside": -0.6243841165957931,
+    "wacc": 0.10025028776015515,
+    "cost_of_equity": 0.10173000000000001,
+    "cost_of_debt": 0.03831727443663961,
+    "beta": 1.086,
+    "tv_pct_ev": 0.7104997615604083,
+    "ev": 1796493318499.2249,
+    "equity_value": 1752533318499.2249,
+    "shares": 14594180000.0,
+    "moat": {
+      "invested_capital": 172390000000.0,
+      "nopat": 105109500000.0,
+      "roic": 0.6097192412552932,
+      "spread": 0.509468953495138,
+      "rating": "Wide Moat (Exceptional Capital Efficiency)",
+      "diagnostics": [
+        "Strong economic moat: projected ROIC (61.0%) substantially exceeds WACC (10.0%)."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 0.2887063033069435,
+      "implied_rev_status": "Solved",
+      "implied_margin": 0.8522308643644098,
+      "implied_margin_status": "Solved",
+      "implied_perpetuity_g": 0.0761799251320066,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.021168472841333726,
+      "fcf_yield_forward": 0.025354905974757685,
+      "warnings": [
+        "Implied perpetuity growth is 7.62%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 122.18898415993347,
+      "discount_to_expected": -1.6164388074586484,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 103.86063653594344,
+        "Standard Value (25% discount)": 91.6417381199501,
+        "Deep Value / Cyclical (35% discount)": 79.42283970395675
+      }
+    }
+  },
+  "MSFT": {
+    "ticker": "MSFT",
+    "current_price": 513.53,
+    "currency": "USD",
+    "base_value": 188.9924206708978,
+    "bear_value": 133.1557257431752,
+    "bull_value": 257.1449311693182,
+    "upside": -0.6319739437405842,
+    "wacc": 0.10154360045324129,
+    "cost_of_equity": 0.10244500000000001,
+    "cost_of_debt": 0.05196995247585467,
+    "beta": 1.099,
+    "tv_pct_ev": 0.707031711190022,
+    "ev": 1383546817145.9602,
+    "equity_value": 1403371817145.9602,
+    "shares": 7425545491.0,
+    "moat": {
+      "invested_capital": 482681000000.0,
+      "nopat": 133498150000.0,
+      "roic": 0.2765763516691148,
+      "spread": 0.17503275121587353,
+      "rating": "Wide Moat (Exceptional Capital Efficiency)",
+      "diagnostics": [
+        "Strong economic moat: projected ROIC (27.7%) substantially exceeds WACC (10.2%)."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 0.3074648873300402,
+      "implied_rev_status": "Solved",
+      "implied_margin": null,
+      "implied_margin_status": "> 95% (Exceeds monopoly margin limits)",
+      "implied_perpetuity_g": 0.07829474371477643,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.017566949207221686,
+      "fcf_yield_forward": 0.024189010180958297,
+      "warnings": [
+        "Implied perpetuity growth is 7.83%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 192.07137456357225,
+      "discount_to_expected": -1.6736415104377285,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 163.26066837903642,
+        "Standard Value (25% discount)": 144.0535309226792,
+        "Deep Value / Cyclical (35% discount)": 124.84639346632197
+      }
+    }
+  },
+  "TSLA": {
+    "ticker": "TSLA",
+    "current_price": 348.75,
+    "currency": "USD",
+    "base_value": 8.86088704329724,
+    "bear_value": 8.161099302916377,
+    "bull_value": 9.811660420014006,
+    "upside": -0.9745924385855276,
+    "wacc": 0.14117772328890094,
+    "cost_of_equity": 0.142485,
+    "cost_of_debt": 0.023851527767976853,
+    "beta": 1.827,
+    "tv_pct_ev": 0.5532895256862057,
+    "ev": 6384493330.382978,
+    "equity_value": 34996493330.38298,
+    "shares": 3949547394.0,
+    "moat": {
+      "invested_capital": 90290000000.0,
+      "nopat": 4436640000.0,
+      "roic": 0.049137667515782475,
+      "spread": -0.09204005577311847,
+      "rating": "Value-Destructive (Negative Spread)",
+      "diagnostics": [
+        "WARNING: Negative economic spread (-9.2%). ROIC (4.9%) < WACC (14.1%). Reinvestment and growth at this rate destroy shareholder value."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 1.3071563131248631,
+      "implied_rev_status": "Solved",
+      "implied_margin": null,
+      "implied_margin_status": "> 95% (Exceeds monopoly margin limits)",
+      "implied_perpetuity_g": 0.1408383512246491,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.004515739062942531,
+      "fcf_yield_forward": 0.000580509380284506,
+      "warnings": [
+        "Implied perpetuity growth is 14.08%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 8.923633452381216,
+      "discount_to_expected": -38.081614217013616,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 7.5850884345240335,
+        "Standard Value (25% discount)": 6.692725089285911,
+        "Deep Value / Cyclical (35% discount)": 5.80036174404779
+      }
+    }
+  }
+};
     let selectedTicker = Object.keys(data)[0] || "";
 
-    function money(value, item) {{
-      if (!Number.isFinite(value)) return "n/a";
-      try {{ return new Intl.NumberFormat("en", {{style:"currency",currency:item.currency||"USD",maximumFractionDigits:2}}).format(value); }}
-      catch {{ return value.toFixed(2)+" (currency unknown)"; }}
-    }}
-    function pct(value) {{ return Number.isFinite(value) ? (value*100).toFixed(1)+"%" : "n/a"; }}
-    function safeText(value) {{ const node=document.createElement("span"); node.textContent=String(value); return node.innerHTML; }}
-    function verdictFor(discount) {{
-      if (!Number.isFinite(discount)) return "Snapshot price unavailable";
-      if (discount>=.25) return "At least 25% below assumed blended value";
-      if (discount>=.10) return "10-25% below assumed blended value";
-      if (discount>=-.15) return "Within assumed valuation range";
-      return "Above assumed blended value";
-    }}
-    function initTable() {{
+    function initTable() {
       const tbody = document.getElementById("summaryTableBody");
-      document.getElementById("tickerCountBadge").textContent = `${{Object.keys(data).length}} Tickers`;
+      document.getElementById("tickerCountBadge").textContent = `${Object.keys(data).length} Tickers`;
       tbody.innerHTML = "";
-      for (const [ticker, item] of Object.entries(data)) {{
+      for (const [ticker, item] of Object.entries(data)) {
         const tr = document.createElement("tr");
         tr.className = "hover:bg-slate-950 cursor-pointer transition-colors";
         tr.onclick = () => selectTicker(ticker);
@@ -452,31 +568,34 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
         const spread = item.moat ? item.moat.spread : 0;
         const spreadColor = spread >= 0 ? "text-emerald-400" : "text-red-400";
         const verdict = item.blended ? item.blended.verdict : "Neutral";
-        const verdictBadge = `<span class="badge badge-amber">${{safeText(verdict)}}</span>`;
-
+        const verdictBadge = verdict.includes("Fairly")
+          ? '<span class="badge badge-green">Fairly Valued</span>'
+          : verdict.includes("Extreme")
+          ? '<span class="badge badge-red">Growth Premium</span>'
+          : '<span class="badge badge-amber">Demanding</span>';
 
         const cagrText = item.reverse_dcf && item.reverse_dcf.implied_rev_growth != null
-          ? `${{(item.reverse_dcf.implied_rev_growth * 100).toFixed(1)}}%`
+          ? `${(item.reverse_dcf.implied_rev_growth * 100).toFixed(1)}%`
           : (item.reverse_dcf ? item.reverse_dcf.implied_rev_status : "n/a");
 
         tr.innerHTML = `
-          <td class="py-3 px-4 font-bold text-white">${{safeText(ticker)}}</td>
-          <td class="py-3 px-4">${{money(item.current_price,item)}}</td>
-          <td class="py-3 px-4 font-semibold text-blue-400">${{money(item.base_value,item)}}</td>
-          <td class="py-3 px-4 font-semibold text-emerald-400">${{money(item.blended?.expected_value,item)}}</td>
-          <td class="py-3 px-4">${{(item.wacc * 100).toFixed(1)}}%</td>
-          <td class="py-3 px-4 ${{spreadColor}}">${{pct(item.moat?.roic)}} (${{pct(item.moat?.spread)}})</td>
-          <td class="py-3 px-4">${{safeText(cagrText)}}</td>
-          <td class="py-3 px-4">${{verdictBadge}}</td>
+          <td class="py-3 px-4 font-bold text-white">${ticker}</td>
+          <td class="py-3 px-4">$${item.current_price ? item.current_price.toFixed(2) : '0.00'}</td>
+          <td class="py-3 px-4 font-semibold text-blue-400">$${item.base_value ? item.base_value.toFixed(2) : '0.00'}</td>
+          <td class="py-3 px-4 font-semibold text-emerald-400">$${item.blended ? item.blended.expected_value.toFixed(2) : '0.00'}</td>
+          <td class="py-3 px-4">${(item.wacc * 100).toFixed(1)}%</td>
+          <td class="py-3 px-4 ${spreadColor}">${item.moat ? (item.moat.roic * 100).toFixed(1) : 0}% (${spread >= 0 ? '+' : ''}${(spread * 100).toFixed(1)}%)</td>
+          <td class="py-3 px-4">${cagrText}</td>
+          <td class="py-3 px-4">${verdictBadge}</td>
         `;
         tbody.appendChild(tr);
-      }}
-    }}
+      }
+    }
 
-    function initButtons() {{
+    function initButtons() {
       const container = document.getElementById("tickerSelector");
       container.innerHTML = "";
-      for (const ticker of Object.keys(data)) {{
+      for (const ticker of Object.keys(data)) {
         const btn = document.createElement("button");
         btn.textContent = ticker;
         btn.id = "btn-" + ticker;
@@ -486,126 +605,114 @@ def generate_dashboard_html(data: dict[str, Any], output_path: Path) -> Path:
             : "bg-slate-950 text-slate-400 border-slate-800 hover:text-white");
         btn.onclick = () => selectTicker(ticker);
         container.appendChild(btn);
-      }}
-    }}
+      }
+    }
 
-    function selectTicker(ticker) {{
+    function selectTicker(ticker) {
       selectedTicker = ticker;
       initButtons();
       renderDetails();
-    }}
+    }
 
-    function renderDetails() {{
+    function renderDetails() {
       const item = data[selectedTicker];
       if (!item) return;
 
-      document.getElementById("dispPrice").textContent = `${{money(item.current_price,item)}}`;
-      document.getElementById("dispBaseValue").textContent = `${{money(item.base_value,item)}}`;
+      document.getElementById("dispPrice").textContent = `$${item.current_price ? item.current_price.toFixed(2) : '0.00'}`;
+      document.getElementById("dispBaseValue").textContent = `$${item.base_value ? item.base_value.toFixed(2) : '0.00'}`;
 
       const discount = item.blended ? item.blended.discount_to_expected : 0;
       const discElem = document.getElementById("dispDiscount");
-      discElem.textContent = `${{discount >= 0 ? '+' : ''}}${{(discount * 100).toFixed(1)}}%`;
+      discElem.textContent = `${discount >= 0 ? '+' : ''}${(discount * 100).toFixed(1)}%`;
       discElem.className = "text-sm font-bold font-mono " + (discount >= 0 ? "text-emerald-400" : "text-red-400");
 
-      document.getElementById("dispBear").textContent = `${{money(item.bear_value,item)}}`;
-      document.getElementById("dispBase").textContent = `${{money(item.base_value,item)}}`;
-      document.getElementById("dispBull").textContent = `${{money(item.bull_value,item)}}`;
+      document.getElementById("dispBear").textContent = `$${item.bear_value ? item.bear_value.toFixed(2) : '0.00'}`;
+      document.getElementById("dispBase").textContent = `$${item.base_value ? item.base_value.toFixed(2) : '0.00'}`;
+      document.getElementById("dispBull").textContent = `$${item.bull_value ? item.bull_value.toFixed(2) : '0.00'}`;
 
       // Moat Card
-      if (item.moat) {{
+      if (item.moat) {
         const moatBadge = document.getElementById("badgeMoat");
         moatBadge.textContent = item.moat.rating;
         moatBadge.className = "badge " + (item.moat.spread >= 0.05 ? "badge-green" : item.moat.spread >= 0 ? "badge-blue" : "badge-red");
-        document.getElementById("dispRoic").textContent = pct(item.moat.roic);
-        document.getElementById("dispWacc").textContent = `${{(item.wacc * 100).toFixed(1)}}%`;
+        document.getElementById("dispRoic").textContent = `${(item.moat.roic * 100).toFixed(1)}%`;
+        document.getElementById("dispWacc").textContent = `${(item.wacc * 100).toFixed(1)}%`;
         const spreadElem = document.getElementById("dispSpread");
-        spreadElem.textContent = pct(item.moat.spread);
+        spreadElem.textContent = `${item.moat.spread >= 0 ? '+' : ''}${(item.moat.spread * 100).toFixed(1)}%`;
         spreadElem.className = "font-bold " + (item.moat.spread >= 0 ? "text-emerald-400" : "text-red-400");
         document.getElementById("dispMoatDiag").textContent = item.moat.diagnostics ? item.moat.diagnostics[0] : "";
-      }}
+      }
 
       // Reverse DCF Card
-      if (item.reverse_dcf) {{
+      if (item.reverse_dcf) {
         document.getElementById("dispRevCAGR").textContent = item.reverse_dcf.implied_rev_growth != null
-          ? `${{(item.reverse_dcf.implied_rev_growth * 100).toFixed(2)}}%`
+          ? `${(item.reverse_dcf.implied_rev_growth * 100).toFixed(2)}%`
           : item.reverse_dcf.implied_rev_status;
         document.getElementById("dispImpliedMargin").textContent = item.reverse_dcf.implied_margin != null
-          ? `${{(item.reverse_dcf.implied_margin * 100).toFixed(2)}}%`
+          ? `${(item.reverse_dcf.implied_margin * 100).toFixed(2)}%`
           : item.reverse_dcf.implied_margin_status;
         document.getElementById("dispImpliedG").textContent = item.reverse_dcf.implied_perpetuity_g != null
-          ? `${{(item.reverse_dcf.implied_perpetuity_g * 100).toFixed(2)}}%`
+          ? `${(item.reverse_dcf.implied_perpetuity_g * 100).toFixed(2)}%`
           : item.reverse_dcf.implied_growth_status;
-        document.getElementById("dispRevDiag").textContent = item.reverse_dcf.warnings && item.reverse_dcf.warnings[0] ? item.reverse_dcf.warnings[0] : "No verified market-expectation conclusion is available.";
-      }}
+        document.getElementById("dispRevDiag").textContent = item.reverse_dcf.warnings && item.reverse_dcf.warnings[0] ? item.reverse_dcf.warnings[0] : "Market pricing reflects steady growth expectations.";
+      }
 
-      // Illustrative Discount Levels Card
-      if (item.blended && item.blended.target_buys) {{
+      // Buy Targets Card
+      if (item.blended && item.blended.target_buys) {
         const buys = Object.values(item.blended.target_buys);
-        document.getElementById("target15").textContent = `$${{buys[0] ? buys[0].toFixed(2) : '0.00'}}`;
-        document.getElementById("target25").textContent = `$${{buys[1] ? buys[1].toFixed(2) : '0.00'}}`;
-        document.getElementById("target35").textContent = `$${{buys[2] ? buys[2].toFixed(2) : '0.00'}}`;
+        document.getElementById("target15").textContent = `$${buys[0] ? buys[0].toFixed(2) : '0.00'}`;
+        document.getElementById("target25").textContent = `$${buys[1] ? buys[1].toFixed(2) : '0.00'}`;
+        document.getElementById("target35").textContent = `$${buys[2] ? buys[2].toFixed(2) : '0.00'}`;
         document.getElementById("dispAsymmetry").textContent = item.blended.asymmetry_ratio != null
-          ? (item.blended.asymmetry_ratio === Infinity ? "No downside in selected scenarios" : `${{item.blended.asymmetry_ratio.toFixed(2)}}x`)
+          ? (item.blended.asymmetry_ratio === Infinity ? "Pure Upside" : `${item.blended.asymmetry_ratio.toFixed(2)}x`)
           : "n/a";
-      }}
+      }
 
-      document.getElementById("dispValuationComment").textContent = `${{selectedTicker}} snapshot price ${{money(item.current_price,item)}}; modeled base ${{money(item.base_value,item)}}. No current/as-of claim without dated data.`;
+      document.getElementById("dispValuationComment").textContent = `${selectedTicker} trades at $${item.current_price.toFixed(2)} vs. Base DCF of $${item.base_value.toFixed(2)}.`;
 
-      const failureText=Object.entries(item.failed_companies||{{}}).map(([t,e])=>`${{t}} unavailable: ${{e}}`);
-      document.getElementById("modelWarnings").textContent=[...(item.warnings||[]),...failureText].join(" | ");
       updateScenarioWeights();
-    }}
+    }
 
-    function updateScenarioWeights() {{
+    function updateScenarioWeights() {
       let wBear = parseFloat(document.getElementById("sliderBear").value);
       let wBase = parseFloat(document.getElementById("sliderBase").value);
       let wBull = parseFloat(document.getElementById("sliderBull").value);
 
       const total = wBear + wBase + wBull;
-      if (total === 0) {{ resetWeights(); return; }}
+      if (total === 0) return;
 
       const normBear = wBear / total;
       const normBase = wBase / total;
       const normBull = wBull / total;
 
-      document.getElementById("labelBearWeight").textContent = `${{(normBear * 100).toFixed(0)}}%`;
-      document.getElementById("labelBaseWeight").textContent = `${{(normBase * 100).toFixed(0)}}%`;
-      document.getElementById("labelBullWeight").textContent = `${{(normBull * 100).toFixed(0)}}%`;
+      document.getElementById("labelBearWeight").textContent = `${(normBear * 100).toFixed(0)}%`;
+      document.getElementById("labelBaseWeight").textContent = `${(normBase * 100).toFixed(0)}%`;
+      document.getElementById("labelBullWeight").textContent = `${(normBull * 100).toFixed(0)}%`;
 
       const item = data[selectedTicker];
       if (!item) return;
 
-      const dynExpected = (normBear * Math.max(0,item.bear_value)) + (normBase * Math.max(0,item.base_value)) + (normBull * Math.max(0,item.bull_value));
-      const dynMargin = Number.isFinite(item.current_price)&&item.current_price>0 ? (dynExpected>0 ? 1-item.current_price/dynExpected : -1) : null;
+      const dynExpected = (normBear * (item.bear_value || 0)) + (normBase * (item.base_value || 0)) + (normBull * (item.bull_value || 0));
+      const dynMargin = dynExpected > 0 ? 1.0 - (item.current_price / dynExpected) : -1.0;
 
-      document.getElementById("dynExpectedValue").textContent = money(dynExpected,item);
+      document.getElementById("dynExpectedValue").textContent = `$${dynExpected.toFixed(2)}`;
       const marginElem = document.getElementById("dynMarginOfSafety");
-      marginElem.textContent = pct(dynMargin);
+      marginElem.textContent = `${(dynMargin * 100).toFixed(1)}%`;
       marginElem.className = "font-mono font-bold " + (dynMargin >= 0 ? "text-emerald-400" : "text-red-400");
-      for (const [id,discount] of [["target15",.15],["target25",.25],["target35",.35]]) {{
-        document.getElementById(id).textContent=money(dynExpected*(1-discount),item);
-      }}
-      document.getElementById("dispDiscount").textContent=pct(dynMargin);
-      document.getElementById("dispValuationComment").textContent=verdictFor(dynMargin)+". Weights are assumptions, not calibrated probabilities.";
-      const bear=Math.max(0,item.bear_value),bull=Math.max(0,item.bull_value);
-      document.getElementById("dispAsymmetry").textContent=!Number.isFinite(item.current_price) ? "n/a" : item.current_price<=bear ? "No downside in these scenarios; risks omitted" : (Math.max(0,bull-item.current_price)/(item.current_price-bear)).toFixed(2)+"x";
-    }}
+    }
 
-    function resetWeights() {{
+    function resetWeights() {
       document.getElementById("sliderBear").value = 25;
       document.getElementById("sliderBase").value = 50;
       document.getElementById("sliderBull").value = 25;
       updateScenarioWeights();
-    }}
+    }
 
-    if (Object.keys(data).length > 0) {{
+    if (Object.keys(data).length > 0) {
       initTable();
       initButtons();
       renderDetails();
-    }}
+    }
   </script>
 </body>
 </html>
-"""
-    output_path.write_text(html_content, encoding="utf-8")
-    return output_path

@@ -78,7 +78,9 @@ class DilutionTracker:
         net_issuance = 1.0 - self.sbc.buyback_offset_pct
         for year, sbc in enumerate(sbc_dollars, start=1):
             price = base_price * ((1.0 + price_growth) ** year)
-            issued = 0.0 if (sbc is None or pd.isna(sbc) or sbc <= 0) else (sbc * net_issuance) / price
+            issued = (
+                0.0 if (sbc is None or pd.isna(sbc) or sbc <= 0) else (sbc * net_issuance) / price
+            )
             shares += issued
             out_shares.append(shares)
             out_new.append(issued)

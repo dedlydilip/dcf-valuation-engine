@@ -1,24 +1,22 @@
-"""Reverse DCF / Expectations Investing Engine.
+"""Infer assumptions by bounded search through the complete forward engine.
 
-Inverts the discounted-cash-flow valuation. Instead of asking:
-    "What is the company worth under my assumptions?"
-It asks:
-    "What growth, margin, and terminal rate is the market baking into today's price?"
-
-Solves analytically for implied perpetuity growth, and uses bounded root-finding
-(Brent's method) for implied 5-year revenue CAGR and implied operating margin.
+Only roots whose repriced value matches the target are reported. Multiple
+roots and unsupported ranges remain explicit; inferred assumptions are not
+forecasts or uniquely identified market beliefs.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
 from scipy.optimize import root_scalar
 
-from src.dcf.engine import DCFEngine, terminal_discount_factor
+from src.dcf.engine import DCFEngine
 from src.models.assumptions import DCFAssumptions
+from src.models.errors import ValuationError
 
 
 @dataclass
@@ -67,12 +65,10 @@ def solve_reverse_dcf(
 ) -> ReverseDCFResult:
     """Solve for the market-implied growth, margins, and terminal assumptions."""
     # Run baseline valuation first
-    base_result = DCFEngine(
-        financials, assumptions, comps_terminal, ticker=ticker
-    ).run()
+    base_result = DCFEngine(financials, assumptions, comps_terminal, ticker=ticker).run()
 
     price = target_price if target_price is not None else base_result.bridge.current_price
-    if price is None or price <= 0:
+    if price is None or not math.isfinite(price) or price <= 0:
         return ReverseDCFResult(
             ticker=ticker,
             current_price=0.0,
@@ -85,148 +81,108 @@ def solve_reverse_dcf(
     wacc = base_result.wacc.wacc
     shares = base_result.bridge.shares
     years = assumptions.projection.years
-    mid_year = assumptions.projection.mid_year_convention
     warnings_list: list[str] = []
 
-    # ------------------------------------------------ 1. Implied Perpetuity Growth (Closed-form)
-    # Target EV required to yield target_price
-    target_equity = price * shares
-    target_ev = (
-        target_equity
-        + base_result.bridge.total_debt
-        - base_result.bridge.cash
-        + base_result.bridge.minority_interest
-        + base_result.bridge.preferred_equity
-        - base_result.bridge.investments
-    )
-    pv_explicit = sum(base_result.pv_explicit)
-    target_pv_tv = target_ev - pv_explicit
-    df_tv = terminal_discount_factor(wacc, years, mid_year=mid_year, method="gordon")
-    target_tv = target_pv_tv / df_tv if df_tv > 0 else float("nan")
-
-    fcf_final = float(base_result.projection.unlevered_fcf.iloc[-1])
-    implied_g: float | None = None
-    growth_status = "Solved"
-
-    if (target_tv + fcf_final) > 0 and pd.notna(target_tv):
-        g_candidate = (target_tv * wacc - fcf_final) / (target_tv + fcf_final)
-        if g_candidate >= wacc:
-            implied_g = g_candidate
-            growth_status = "Exceeds WACC (Infinite Value)"
-            warnings_list.append(
-                f"Market price implies perpetuity growth ({g_candidate:.2%}) >= WACC ({wacc:.2%}), which is economically impossible."
-            )
-        elif g_candidate < -0.20:
-            implied_g = g_candidate
-            growth_status = "Severe Terminal Contraction"
-        else:
-            implied_g = g_candidate
-            if implied_g > 0.035:
-                warnings_list.append(
-                    f"Implied perpetuity growth is {implied_g:.2%}, exceeding long-term global GDP ceiling (3.5%)."
-                )
-    else:
-        growth_status = "Unattainable (Required TV is negative)"
+    # Terminal growth is identified only when it affects the selected valuation.
+    implied_g = None
+    growth_status = "Not identified for exit-multiple valuation"
 
     # Helper to evaluate valuation delta for a parameter patch
     def _eval_patch(patch_dict: dict[str, Any]) -> float:
         patched = assumptions.model_copy(deep=True)
-        for path, val in patch_dict.items():
-            sec, key = path.split(".", 1)
-            setattr(getattr(patched, sec), key, val)
         try:
-            val_res = DCFEngine(
-                financials, patched, comps_terminal, ticker=ticker
-            ).run()
+            for path, val in patch_dict.items():
+                sec, key = path.split(".", 1)
+                setattr(getattr(patched, sec), key, val)
+            val_res = DCFEngine(financials, patched, comps_terminal, ticker=ticker).run()
             return val_res.value_per_share - price
-        except Exception:
+        except (ValueError, ArithmeticError, ValuationError):
             return float("nan")
 
-    # ------------------------------------------------ 2. Implied 5-Year Revenue Growth (CAGR)
-    implied_rev_growth: float | None = None
-    rev_status = "Solved"
+    def solve_parameter(path, lower, upper, anchor, label):
+        import numpy as np
 
-    def _f_rev(g: float) -> float:
-        return _eval_patch({"projection.revenue_growth": [g] * years})
+        def evaluate(x):
+            val = [float(x)] * years if path.startswith("projection.") else float(x)
+            return _eval_patch({path: val})
 
-    # Bracket search with automated expansion
-    brackets = [(-0.30, 0.40), (-0.70, 0.90), (-0.90, 2.00)]
-    bracket_found = False
-    valid_bracket: tuple[float, float] | None = None
+        # Nonmonotonicity and terminal fallback can create multiple roots or jumps.
+        nodes = sorted(
+            set(np.linspace(lower, upper, 45).tolist() + [min(max(anchor, lower), upper)])
+        )
+        values = [evaluate(x) for x in nodes]
+        tolerance = max(1e-6, abs(price) * 1e-7)
+        roots = []
+        for x, v in zip(nodes, values, strict=True):
+            if pd.notna(v) and abs(v) < tolerance:
+                roots.append(x)
+        for lo, hi, fl, fh in zip(nodes[:-1], nodes[1:], values[:-1], values[1:], strict=True):
+            if pd.isna(fl) or pd.isna(fh) or fl * fh >= 0:
+                continue
+            try:
+                sol = root_scalar(evaluate, bracket=(lo, hi), method="brentq", xtol=1e-11)
+                if sol.converged and abs(evaluate(sol.root)) < tolerance:
+                    roots.append(float(sol.root))
+            except (ValueError, ArithmeticError):
+                continue
+        if not roots:
+            return None, "No verified solution in supported range"
+        roots = sorted(roots)
+        unique = [roots[0]]
+        for x in roots[1:]:
+            if abs(x - unique[-1]) > 1e-6:
+                unique.append(x)
+        if len(unique) > 1:
+            warnings_list.append(
+                f"{label}: multiple verified solutions; nearest base assumption reported."
+            )
+        return min(unique, key=lambda x: abs(x - anchor)), "Solved (forward residual verified)"
 
-    for low, high in brackets:
-        f_low = _f_rev(low)
-        f_high = _f_rev(high)
-        if pd.notna(f_low) and pd.notna(f_high) and f_low * f_high <= 0:
-            valid_bracket = (low, high)
-            bracket_found = True
-            break
-
-    if bracket_found and valid_bracket is not None:
-        try:
-            sol = root_scalar(_f_rev, bracket=valid_bracket, method="brentq", xtol=1e-4)
-            if sol.converged:
-                implied_rev_growth = float(sol.root)
-            else:
-                rev_status = "Solver did not converge"
-        except Exception as exc:
-            rev_status = f"Solver error: {exc}"
-    else:
-        # Determine whether price is above or below search space
-        f_min = _f_rev(-0.90)
-        f_max = _f_rev(2.00)
-        if pd.notna(f_max) and f_max < 0:
-            rev_status = "> 200% (Market expectation exceeds hyper-growth)"
-        elif pd.notna(f_min) and f_min > 0:
-            rev_status = "< -90% (Market expectation implies terminal decline)"
-        else:
-            rev_status = "Not solvable within realistic range"
-
-    # ------------------------------------------------ 3. Implied Operating (EBIT) Margin
-    implied_margin: float | None = None
-    margin_status = "Solved"
-
-    def _f_margin(m: float) -> float:
-        return _eval_patch({"projection.ebit_margin": [m] * years})
-
-    margin_brackets = [(0.02, 0.50), (0.005, 0.75), (0.001, 0.95)]
-    m_bracket_found = False
-    valid_m_bracket: tuple[float, float] | None = None
-
-    for low, high in margin_brackets:
-        f_low = _f_margin(low)
-        f_high = _f_margin(high)
-        if pd.notna(f_low) and pd.notna(f_high) and f_low * f_high <= 0:
-            valid_m_bracket = (low, high)
-            m_bracket_found = True
-            break
-
-    if m_bracket_found and valid_m_bracket is not None:
-        try:
-            sol_m = root_scalar(_f_margin, bracket=valid_m_bracket, method="brentq", xtol=1e-4)
-            if sol_m.converged:
-                implied_margin = float(sol_m.root)
-            else:
-                margin_status = "Solver did not converge"
-        except Exception as exc:
-            margin_status = f"Solver error: {exc}"
-    else:
-        f_m_max = _f_margin(0.95)
-        f_m_min = _f_margin(0.001)
-        if pd.notna(f_m_max) and f_m_max < 0:
-            margin_status = "> 95% (Exceeds monopoly margin limits)"
-        elif pd.notna(f_m_min) and f_m_min > 0:
-            margin_status = "< 0.1% (Requires near-zero margin)"
-        else:
-            margin_status = "Not solvable within realistic range"
+    if base_result.terminal.method != "exit_multiple":
+        implied_g, growth_status = solve_parameter(
+            "terminal.perpetuity_growth",
+            -0.02,
+            min(0.06, wacc - 1e-5),
+            assumptions.terminal.perpetuity_growth,
+            "Terminal growth",
+        )
+    if implied_g is not None and implied_g > assumptions.terminal.max_implied_growth:
+        warnings_list.append("Implied terminal growth exceeds the configured long-run ceiling.")
+    base_growth = float(base_result.projection.table.loc["revenue_growth"].mean())
+    implied_rev_growth, rev_status = solve_parameter(
+        "projection.revenue_growth", -0.9, 2.0, base_growth, "Revenue growth"
+    )
+    margin_anchor = float(base_result.projection.table.loc["ebit_margin"].mean())
+    if assumptions.projection.margin_basis == "before_sbc":
+        margin_anchor += float(
+            (
+                base_result.projection.table.loc["sbc"]
+                / base_result.projection.table.loc["revenue"]
+            ).mean()
+        )
+    implied_margin, margin_status = solve_parameter(
+        "projection.ebit_margin", -0.5, 0.95, margin_anchor, "Operating margin"
+    )
 
     # ------------------------------------------------ 4. Cash Flow Yields
-    market_cap = price * shares
+    from src.dcf.bridge import base_share_count
+
+    market_cap = price * base_share_count(financials)
     fcf_reported = base_result.projection.reported_fcf_latest
     fcf_forward_yr1 = float(base_result.projection.unlevered_fcf.iloc[0])
 
     fcf_yield_trailing = fcf_reported / market_cap if market_cap > 0 else None
-    fcf_yield_forward = fcf_forward_yr1 / market_cap if market_cap > 0 else None
+    market_ev = (
+        market_cap
+        + base_result.bridge.net_debt
+        + base_result.bridge.minority_interest
+        + base_result.bridge.preferred_equity
+        - base_result.bridge.investments
+    )
+    fcf_yield_forward = fcf_forward_yr1 / market_ev if market_ev > 0 else None
+    warnings_list.append(
+        "Forward yield is unlevered FCF / enterprise value; trailing yield is reported FCF / equity market cap. They have different bases."
+    )
 
     return ReverseDCFResult(
         ticker=ticker,

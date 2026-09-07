@@ -118,7 +118,7 @@ def convert_info(info: dict[str, Any], rate: float) -> dict[str, Any]:
     if rate == 1.0:
         return info
     out = dict(info)
-    for key in ("totalDebt", "totalCash", "enterpriseValue"):
+    for key in ("totalDebt", "totalCash"):
         value = out.get(key)
         if value:
             out[key] = float(value) * rate

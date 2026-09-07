@@ -44,9 +44,7 @@ def _build(tmp_path, ticker="AAPL", method="expense"):
     warnings.simplefilter("ignore")
     financials = YFinanceClient(ticker, offline_mode=True).get_financials()
     assumptions = DCFAssumptions.from_yaml(overrides={"sbc": {"method": method}})
-    comps = CompsEngine(
-        ticker, assumptions, offline_mode=True, target_financials=financials
-    ).run()
+    comps = CompsEngine(ticker, assumptions, offline_mode=True, target_financials=financials).run()
     result = DCFEngine(financials, assumptions, comps.terminal_inputs(), ticker=ticker).run()
     sensitivity = wacc_vs_growth(financials, assumptions, result, comps.terminal_inputs())
     monte = run_monte_carlo(result, assumptions)
@@ -116,9 +114,9 @@ class TestFormulasAreLive:
                 if dcf.cell(row=row_number, column=col).value is not None
             ]
             assert values, f"{label} has no values"
-            assert any(
-                isinstance(v, str) and v.startswith("=") for v in values
-            ), f"{label} is hardcoded, not a formula"
+            assert any(isinstance(v, str) and v.startswith("=") for v in values), (
+                f"{label} is hardcoded, not a formula"
+            )
 
     def test_wacc_sheet_is_formula_driven(self, workbook):
         book, _, _ = workbook
@@ -129,7 +127,16 @@ class TestFormulasAreLive:
             for c in row
             if isinstance(c.value, str) and c.value.startswith("=")
         ]
-        assert len(formulas) >= 10
+        labels = {row[0].value: row[1].value for row in wacc.iter_rows(min_col=1, max_col=2)}
+        for label in (
+            "Beta",
+            "Cost of equity",
+            "After-tax cost of debt",
+            "Debt weight",
+            "Equity weight",
+            "WACC",
+        ):
+            assert labels[label].startswith("=")
         assert any("Inputs!" in f for f in formulas), "WACC should link to Inputs"
 
     def test_sensitivity_cells_recompute(self, workbook):
@@ -142,7 +149,11 @@ class TestFormulasAreLive:
             if isinstance(c.value, str) and c.value.startswith("=")
         ]
         assert len(formulas) >= 25, "sensitivity grid should be live, not pasted values"
-        assert any("SUMPRODUCT" in f and "DCF!" in f for f in formulas)
+        helper_formulas = [
+            c.value for row in book["SensitivityCalc"] for c in row if c.data_type == "f"
+        ]
+        assert any("SensitivityCalc!" in f for f in formulas)
+        assert any("SUMPRODUCT" in f and "DCF!" in f for f in helper_formulas)
 
     def test_summary_links_rather_than_duplicates(self, workbook):
         book, _, _ = workbook
@@ -277,10 +288,7 @@ class TestContent:
         book, _, _ = workbook
         sheet = book["Comps"]
         text = " ".join(
-            str(c.value)
-            for row in sheet.iter_rows(min_col=1, max_col=1)
-            for c in row
-            if c.value
+            str(c.value) for row in sheet.iter_rows(min_col=1, max_col=1) for c in row if c.value
         )
         assert "Peer set source:" in text
         assert "sector_map" in text or "industry_map" in text or "config" in text
@@ -328,6 +336,9 @@ class TestSensitivityAgreesWithTheDCFSheet:
 
         formula = sheet.cell(row=corner + 1, column=2).value
         assert isinstance(formula, str) and formula.startswith("=")
+        if formula.startswith("=SensitivityCalc!"):
+            helper_row = int(formula.split("$")[-1])
+            formula = book["SensitivityCalc"][f"K{helper_row}"].value
 
         dcf = book["DCF"]
         idx_row = exp_row = None
@@ -346,6 +357,13 @@ class TestSensitivityAgreesWithTheDCFSheet:
         # version of this test matched the bare row number and tripped over exactly that.
         full_period = f"^DCF!${last_col}${idx_row}"
         mid_year_point = f"^DCF!${last_col}${exp_row}"
+        if "SensitivityCalc" in sheet.cell(row=corner + 1, column=2).value:
+            # The helper branches on the actual method when exit EBITDA is invalid.
+            assert (
+                f'^IF(I{helper_row}="exit_multiple",DCF!${last_col}${idx_row},DCF!${last_col}${exp_row})'
+                in formula
+            )
+            return
 
         assert full_period in formula, (
             f"the exit-multiple grid must discount its terminal value over the full "

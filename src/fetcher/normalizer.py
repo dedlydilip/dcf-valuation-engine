@@ -111,6 +111,7 @@ class FinancialNormalizer:
         columns = sorted(all_columns, key=_period_sort_key)
 
         rows: dict[str, list[float]] = {}
+        aliases = {}
         for canonical, candidates in field_map.items():
             chosen: pd.Series | None = None
             for candidate in candidates:
@@ -119,8 +120,10 @@ class FinancialNormalizer:
                     continue
                 cleaned = FinancialNormalizer.clean_series(series)
                 if cleaned.notna().any():
-                    chosen = cleaned
-                    break
+                    for period, value in cleaned.items():
+                        if pd.notna(value) and (chosen is None or pd.isna(chosen.get(period))):
+                            aliases.setdefault(canonical, {})[str(period)] = candidate
+                    chosen = cleaned if chosen is None else chosen.combine_first(cleaned)
             if chosen is None:
                 continue
             values = [to_float(chosen.get(col, np.nan)) for col in columns]
@@ -132,7 +135,9 @@ class FinancialNormalizer:
             return pd.DataFrame(dtype="float64")
 
         frame = pd.DataFrame(rows, index=columns).T.astype("float64")
-        return _drop_empty_periods(frame)
+        frame = _drop_empty_periods(frame)
+        frame.attrs["source_aliases"] = aliases
+        return frame
 
 
 def _drop_empty_periods(frame: pd.DataFrame) -> pd.DataFrame:

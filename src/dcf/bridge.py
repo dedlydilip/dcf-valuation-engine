@@ -16,7 +16,13 @@ import pandas as pd
 
 from src.models.assumptions import DCFAssumptions
 from src.models.errors import DataQualityError
-from src.models.financials import field_value, info_dict, total_cash_position
+from src.models.financials import (
+    field_value,
+    info_dict,
+    resolved_debt,
+    resolved_minority,
+    total_cash_position,
+)
 
 
 @dataclass
@@ -66,9 +72,11 @@ def build_bridge(
 ) -> BridgeResult:
     cfg = assumptions.bridge
 
-    total_debt = _resolve(None, field_value(financials, "total_debt"), 0.0)
-    cash = _resolve(None, total_cash_position(financials), 0.0)
-    minority = _resolve(cfg.minority_interest, _minority_from_balance(financials), 0.0)
+    total_debt = resolved_debt(financials)
+    cash = _resolve(
+        None, total_cash_position(financials, includes_restricted=cfg.cash_includes_restricted), 0.0
+    )
+    minority = _resolve(cfg.minority_interest, resolved_minority(financials), 0.0)
     # Preferred had a line in the bridge and no way to populate it: the derived value
     # was hardcoded NaN, so `_resolve` fell through to zero unless config named a
     # figure. A company with preferred stock outstanding therefore valued at zero
@@ -95,14 +103,14 @@ def build_bridge(
     ):
         share = reported_inv / enterprise_value
         if share > 0.01:
-                warnings.warn(
-                    f"Balance sheet reports {reported_inv:,.0f} of long-term investments "
-                    f"({share:.1%} of enterprise value) that the bridge does not count. "
-                    f"If they are non-operating they belong in equity value: set "
-                    f"bridge.investments or pass --include-investments to include them.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+            warnings.warn(
+                f"Balance sheet reports {reported_inv:,.0f} of long-term investments "
+                f"({share:.1%} of enterprise value) that the bridge does not count. "
+                f"If they are non-operating they belong in equity value: set "
+                f"bridge.investments or pass --include-investments to include them.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     equity_value = enterprise_value - total_debt + cash - minority - preferred + investments
 

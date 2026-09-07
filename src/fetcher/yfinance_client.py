@@ -81,6 +81,8 @@ class YFinanceClient:
         statement_ccy = str(info.get("financialCurrency") or "USD").upper()
         price_ccy = str(info.get("currency") or "").upper()
 
+        original_statement_ccy = statement_ccy
+        aliases = statements.attrs.get("source_aliases", {})
         rate = self._resolve_fx_rate(currency, statement_ccy, price_ccy)
         if rate is not None:
             statements = convert_statements(statements, rate)
@@ -99,7 +101,14 @@ class YFinanceClient:
             currency=statement_ccy,
             source="offline_sample" if self.offline_mode else "yfinance",
             fx_rate_applied=rate,
-            original_currency=price_ccy if rate is not None else None,
+            original_currency=original_statement_ccy if rate is not None else None,
+            provenance={
+                **raw.get("provenance", {}),
+                "source_aliases": aliases,
+                "fx_rate_applied": rate,
+                "original_statement_currency": original_statement_ccy,
+                "valuation_currency": statement_ccy,
+            },
         )
 
     def _resolve_fx_rate(
@@ -118,6 +127,10 @@ class YFinanceClient:
         if not statement_ccy or not price_ccy or statement_ccy == price_ccy:
             return None
 
+        if self.offline_mode and currency.auto_fx:
+            raise ValuationError(
+                "Offline mode cannot fetch FX. Supply a dated --fx-rate or stored conversion."
+            )
         rate = (
             float(currency.fx_rate)
             if currency.fx_rate is not None
@@ -154,9 +167,11 @@ class YFinanceClient:
 
     def _load_offline_raw(self) -> dict[str, Any]:
         if not self.available_offline():
-            available = sorted(
-                p.name for p in self.offline_path.parent.glob("*") if p.is_dir()
-            ) if self.offline_path.parent.exists() else []
+            available = (
+                sorted(p.name for p in self.offline_path.parent.glob("*") if p.is_dir())
+                if self.offline_path.parent.exists()
+                else []
+            )
             raise OfflineDataMissingError(
                 f"no offline fixture for {self.ticker} at {self.offline_path}. "
                 f"Available: {available or 'none'}. "
@@ -164,11 +179,37 @@ class YFinanceClient:
             )
 
         raw: dict[str, Any] = {}
+        manifest_path = self.offline_path / "manifest.json"
+        raw["provenance"] = (
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest_path.exists()
+            else {"capture_timestamp": None, "status": "legacy fixture; capture time unknown"}
+        )
+        if manifest_path.exists():
+            import hashlib
+
+            manifest = raw["provenance"]
+            if manifest.get("ticker") != self.ticker:
+                raise ValuationError("Snapshot manifest ticker does not match requested ticker")
+            hashes = manifest.get("sha256", {})
+            if not all(name in hashes for name in [*STATEMENT_FILES.values(), INFO_FILE]):
+                raise ValuationError("Snapshot manifest is incomplete")
+            for filename, expected in hashes.items():
+                if Path(filename).name != filename:
+                    raise ValuationError("Invalid snapshot manifest filename")
+                source = self.offline_path / filename
+                if (
+                    not source.is_file()
+                    or hashlib.sha256(source.read_bytes()).hexdigest() != expected
+                ):
+                    raise ValuationError(f"Snapshot integrity check failed: {filename}")
         for key, filename in STATEMENT_FILES.items():
             raw[key] = _read_statement_json(self.offline_path / filename)
 
         info_path = self.offline_path / INFO_FILE
-        raw["info"] = json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
+        raw["info"] = (
+            json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
+        )
 
         prices_path = self.offline_path / PRICES_FILE
         if prices_path.exists():

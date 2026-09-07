@@ -1,22 +1,10 @@
-"""Revenue-to-free-cash-flow projection, with three FCF definitions.
+"""Revenue-to-cash-flow projection.
 
-The reason there are three:
-
-  reported_fcf     CFO - CapEx, exactly as data providers publish it. Adds SBC back
-                   as a non-cash item and stops there, so it flatters any company
-                   that pays its staff in stock. Carried purely for contrast.
-
-  adjusted_fcf     EBIT(1-t) + D&A - CapEx - increase in NWC, with SBC left inside
-                   EBIT where GAAP already put it. This is owner earnings, and it is
-                   what the model discounts under sbc.method = "expense".
-
-  sbc_neutral_fcf  adjusted_fcf with SBC added back after tax. Used under
-                   sbc.method = "dilute", where the cost is charged through a growing
-                   share count instead, and for reconciling to sell-side numbers.
-
-The critical detail is that reported EBIT is already net of stock compensation.
-Subtracting SBC from EBIT(1-t) *and* growing the share count charges shareholders
-twice for one cost. This module never does both; SBCAssumptions refuses to let it.
+Reported FCF is CFO less capex. Adjusted unlevered FCF uses after-SBC
+operating earnings less cash taxes, plus D&A less capex and operating NWC
+investment. The dilution policy adds back gross SBC and deducts repurchase
+cash, preserving the SBC tax deduction. See RELIABILITY.md for tax and margin
+basis assumptions.
 """
 
 from __future__ import annotations
@@ -38,6 +26,9 @@ LINE_ORDER = [
     "sbc",
     "ebit_pre_sbc",
     "taxes",
+    "nol_opening",
+    "nol_used",
+    "nol_ending",
     "nopat",
     "da",
     "capex",
@@ -80,7 +71,7 @@ class ProjectionResult:
 
     @property
     def terminal_ebitda(self) -> float:
-        return float(self.table.loc["nopat"].iloc[-1])
+        return terminal_year_ebitda(self)
 
 
 class Projector:
@@ -147,6 +138,10 @@ class Projector:
         base_margin = (
             float(base_ebit / base_revenue) if pd.notna(base_ebit) and base_revenue else 0.10
         )
+        if proj.margin_basis == "before_sbc" and proj.ebit_margin is None:
+            historical_sbc = self._hist("sbc")
+            if pd.notna(historical_sbc):
+                base_margin += historical_sbc / base_revenue
         margins = expand_series(proj.ebit_margin, years, base_margin)
 
         da_pct = expand_series(proj.da_pct_revenue, years, self._hist_pct_revenue("da", 0.03))
@@ -157,8 +152,7 @@ class Projector:
             start_ratio = capex_pct[0]
             target_ratio = proj.terminal_capex_to_da * da_pct[-1]
             capex_pct = [
-                start_ratio + (target_ratio - start_ratio) * (i / (years - 1))
-                for i in range(years)
+                start_ratio + (target_ratio - start_ratio) * (i / (years - 1)) for i in range(years)
             ]
         nwc_pct = expand_series(proj.nwc_pct_revenue, years, self._base_nwc_pct())
 
@@ -172,21 +166,25 @@ class Projector:
             revenue.append(prior)
 
         ebit = [r * m for r, m in zip(revenue, margins, strict=True)]
+        if proj.margin_basis == "before_sbc":
+            ebit = [e - s for e, s in zip(ebit, sbc_series, strict=True)]
+            margins = [e / r for e, r in zip(ebit, revenue, strict=True)]
         ebit_pre_sbc = [e + s for e, s in zip(ebit, sbc_series, strict=True)]
 
         tax_rate = proj.tax_rate
-        # Which EBIT the tax is computed on follows the SBC treatment: under
-        # "dilute" the SBC add-back is part of the cash flow being valued, so it
-        # is taxed too.
-        taxable = ebit_pre_sbc if sbc_cfg.grow_share_count else ebit
-        taxes = [max(e, 0.0) * tax_rate for e in taxable]
-        nopat = [e - t for e, t in zip(taxable, taxes, strict=True)]
+        # SBC remains deductible in the cash-tax schedule in both treatments.
+        from src.dcf.accounting import cash_tax_schedule
+
+        taxes, nol_opening, nol_used, nol_ending = cash_tax_schedule(
+            ebit, tax_rate, proj.starting_nol
+        )
+        nopat = [e - t for e, t in zip(ebit, taxes, strict=True)]
 
         da = [r * p for r, p in zip(revenue, da_pct, strict=True)]
         capex = [r * p for r, p in zip(revenue, capex_pct, strict=True)]
 
         nwc = [r * p for r, p in zip(revenue, nwc_pct, strict=True)]
-        base_nwc = base_revenue * nwc_pct[0]
+        base_nwc = base_revenue * self._base_nwc_pct()
         nwc_investment: list[float] = []
         prior_nwc = base_nwc
         for level in nwc:
@@ -194,28 +192,15 @@ class Projector:
             prior_nwc = level
 
         # nopat already reflects the chosen treatment, so both series derive from it
-        core = [
-            n + d - c - w
-            for n, d, c, w in zip(nopat, da, capex, nwc_investment, strict=True)
-        ]
+        core = [n + d - c - w for n, d, c, w in zip(nopat, da, capex, nwc_investment, strict=True)]
+        adjusted = core
+        # SBC is a noncash expense: add back the gross charge, preserving actual taxes.
+        sbc_neutral = [f + s for f, s in zip(core, sbc_series, strict=True)]
         if sbc_cfg.grow_share_count:
-            sbc_neutral = core
-            adjusted = [f - s * (1.0 - tax_rate) for f, s in zip(core, sbc_series, strict=True)]
-        else:
-            adjusted = core
-            sbc_neutral = [f + s * (1.0 - tax_rate) for f, s in zip(core, sbc_series, strict=True)]
-
-        # Buybacks used to offset dilution are real cash leaving the business.
-        #
-        # The charge must be after tax, to match the after-tax add-back it reverses.
-        # Subtracting the pre-tax amount against an after-tax add-back left the
-        # dilute-with-full-buyback case exactly SBC x tax_rate below the economically
-        # equivalent expense method -- the tax shield granted once and removed twice.
-        if sbc_cfg.grow_share_count and sbc_cfg.buyback_offset_pct > 0:
-            offset = [
-                s * sbc_cfg.buyback_offset_pct * (1.0 - tax_rate) for s in sbc_series
+            sbc_neutral = [
+                f - s * sbc_cfg.buyback_offset_pct
+                for f, s in zip(sbc_neutral, sbc_series, strict=True)
             ]
-            sbc_neutral = [f - o for f, o in zip(sbc_neutral, offset, strict=True)]
 
         unlevered = sbc_neutral if sbc_cfg.grow_share_count else adjusted
 
@@ -228,6 +213,9 @@ class Projector:
                 "sbc": sbc_series,
                 "ebit_pre_sbc": ebit_pre_sbc,
                 "taxes": taxes,
+                "nol_opening": nol_opening,
+                "nol_used": nol_used,
+                "nol_ending": nol_ending,
                 "nopat": nopat,
                 "da": da,
                 "capex": capex,
@@ -359,4 +347,3 @@ def terminal_year_ebitda(result: ProjectionResult) -> float:
 
 def terminal_year_growth(result: ProjectionResult) -> float:
     return float(result.table.loc["revenue_growth"].iloc[-1])
-

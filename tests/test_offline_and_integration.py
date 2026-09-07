@@ -76,8 +76,7 @@ class TestEndToEnd:
         # value on these assumptions, not an arithmetic error, and it must say so.
         if result.terminal_value_share >= 1:
             assert any(
-                "terminal value is" in w and "enterprise value" in w
-                for w in result.warnings
+                "terminal value is" in w and "enterprise value" in w for w in result.warnings
             ), "a terminal value at or above 100% of EV has to be warned about"
         else:
             assert 0 < result.terminal_value_share < 1
@@ -196,9 +195,7 @@ class TestComps:
         screening itself, which is what this is about."""
         assumptions = DCFAssumptions.model_validate({"comps": {"peers": ["MSFT", "TSLA"]}})
         target = YFinanceClient("AAPL", offline_mode=True).get_financials()
-        result = CompsEngine(
-            "AAPL", assumptions, offline_mode=True, target_financials=target
-        ).run()
+        result = CompsEngine("AAPL", assumptions, offline_mode=True, target_financials=target).run()
         # TSLA trades far outside any plausible EV/EBITDA band.
         assert "TSLA" in result.screened_out.get("ev_ebitda", [])
         assert "TSLA" in result.table.index  # still shown, just not in the median
@@ -249,6 +246,8 @@ class TestSensitivityAndSimulation:
     def test_football_field_includes_market_price(self, base_run):
         financials, assumptions, result = base_run
         sensitivity = wacc_vs_growth(financials, assumptions, result)
-        field = football_field(result, sensitivity, None, run_monte_carlo(result, assumptions).stats)
+        field = football_field(
+            result, sensitivity, None, run_monte_carlo(result, assumptions).stats
+        )
         assert "Current market price" in set(field["method"])
         assert (field["low"] <= field["high"]).all()

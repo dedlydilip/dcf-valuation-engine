@@ -55,6 +55,7 @@ SECTOR_PEERS: dict[str, list[str]] = {
     "Consumer Defensive": ["PG", "KO", "PEP", "COST", "WMT"],
 }
 
+
 def peer_universe() -> tuple[str, ...]:
     """Every ticker the fallback maps can request, sorted.
 
@@ -111,7 +112,7 @@ class CompsResult:
         Returning an empty dict makes the terminal value fall back to the configured
         static multiple, which is a stated assumption rather than a median of two.
         """
-        return dict(self.medians) if self.usable_for_terminal else {}
+        return {**self.medians, "min_peers": self.min_peers} if self.usable_for_terminal else {}
 
     def notes(self) -> list[str]:
         out: list[str] = []
@@ -142,7 +143,13 @@ class CompsResult:
         ):
             median = self.medians.get(f"{multiple}_median")
             metric = target_metrics.get(metric_key)
-            if median is None or metric is None or pd.isna(median) or pd.isna(metric) or metric <= 0:
+            if (
+                median is None
+                or metric is None
+                or pd.isna(median)
+                or pd.isna(metric)
+                or metric <= 0
+            ):
                 continue
             rows.append(
                 {
@@ -306,18 +313,18 @@ def compute_multiples(financials: Financials) -> dict[str, float]:
         price = _info_float(info, "currentPrice")
         market_cap = shares * price if pd.notna(shares) and pd.notna(price) else float("nan")
 
-    debt = field_value(financials, "total_debt", 0.0)
-    cash = field_value(financials, "cash", 0.0) + field_value(
-        financials, "short_term_investments", 0.0
-    )
+    from src.models.financials import resolved_debt, resolved_minority, total_cash_position
+
+    debt = resolved_debt(financials)
+    cash = total_cash_position(financials, default=0.0)
     pref = field_value(financials, "preferred_equity", 0.0)
-    minority = field_value(financials, "minority_interest", 0.0)
+    minority = resolved_minority(financials)
     pref_val = pref if pd.notna(pref) else 0.0
     minority_val = minority if pd.notna(minority) else 0.0
     enterprise_value = market_cap + debt - cash + pref_val + minority_val
 
     revenue = field_value(financials, "revenue")
-    ebitda = field_value(financials, "ebitda")
+    ebitda = field_value(financials, "ebit") + field_value(financials, "da")
     ebit = field_value(financials, "ebit")
     net_income = field_value(financials, "net_income")
 
@@ -355,7 +362,7 @@ def _medians(
         return {}, {}
     peers = table.drop(index=exclude, errors="ignore")
     if peers.empty:
-        peers = table
+        return {}, {}
 
     out: dict[str, float] = {}
     screened: dict[str, list[str]] = {}
@@ -364,6 +371,14 @@ def _medians(
         if column not in peers.columns:
             continue
         values = pd.to_numeric(peers[column], errors="coerce").dropna()
+        if (
+            column in ("revenue_growth", "ebitda_margin")
+            and screen_outliers
+            and "ev_ebitda" in peers
+        ):
+            lo, hi = MULTIPLE_BOUNDS["ev_ebitda"]
+            valid = peers.index[(peers["ev_ebitda"] > lo) & (peers["ev_ebitda"] <= hi)]
+            values = values.loc[values.index.intersection(valid)]
         if screen_outliers and column in MULTIPLE_BOUNDS:
             low, high = MULTIPLE_BOUNDS[column]
             mask = (values > low) & (values <= high)
@@ -387,9 +402,7 @@ def _medians(
     return out, screened
 
 
-def _ratio(
-    numerator: float, denominator: float, allow_negative_numerator: bool = False
-) -> float:
+def _ratio(numerator: float, denominator: float, allow_negative_numerator: bool = False) -> float:
     if pd.isna(numerator) or pd.isna(denominator) or denominator <= 0:
         return float("nan")
     if numerator < 0 and not allow_negative_numerator:

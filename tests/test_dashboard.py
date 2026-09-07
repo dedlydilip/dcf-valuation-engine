@@ -54,9 +54,7 @@ class TestNoExternalDependencies:
 
     def test_no_remote_assets_are_referenced(self, rendered):
         """The whole point of the fix. No script, link or img may reach the network."""
-        remote = re.findall(
-            r'(?:src|href)\s*=\s*["\'](https?://[^"\']+)["\']', rendered
-        )
+        remote = re.findall(r'(?:src|href)\s*=\s*["\'](https?://[^"\']+)["\']', rendered)
         assert not remote, f"dashboard fetches remote assets: {remote}"
 
     def test_the_retired_cdn_is_gone(self, rendered):

@@ -93,9 +93,7 @@ class TestDataRobustness:
             DataQualityGate(empty).validate()
 
     def test_negative_revenue_is_critical(self):
-        financials = make_financials(
-            revenue=-100.0, ebit=10.0, total_debt=0.0, cash=0.0
-        )
+        financials = make_financials(revenue=-100.0, ebit=10.0, total_debt=0.0, cash=0.0)
         with pytest.raises(DataQualityError, match="negative revenue"):
             DataQualityGate(financials).validate()
 

@@ -87,6 +87,7 @@ FIELD_MAP: dict[str, list[str]] = {
     # automatically -- see the note there on why this stays the analyst's call.
     "long_term_investments": ["Investments And Advances", "Long Term Equity Investment"],
     "ordinary_shares": ["Ordinary Shares Number", "Share Issued"],
+    "minority_interest": ["Minority Interest", "Non Controlling Interest In Consolidated Entity"],
     "invested_capital": ["Invested Capital"],
     "net_ppe": ["Net PPE"],
     "working_capital": ["Working Capital"],
@@ -150,6 +151,8 @@ INFO_KEYS: tuple[str, ...] = (
     "financialCurrency",
     "currency",
     "longName",
+    "regularMarketTime",
+    "impliedSharesOutstanding",
 )
 
 
@@ -174,6 +177,7 @@ class Financials:
     # one that refused.
     fx_rate_applied: float | None = None
     original_currency: str | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     @property
     def converted(self) -> bool:
@@ -225,13 +229,13 @@ class Financials:
         """
         ca = self.series("current_assets")
         cl = self.series("current_liabilities")
-        cash = self.series("cash").fillna(0.0)
-        sti = self.series("short_term_investments").fillna(0.0)
-        total_cash_sti = cash + sti
-        combined = self.series("cash_and_sti_combined").fillna(0.0)
-        # Use combined row if separate cash/sti are zero or missing across the series
+        cash = self.series("cash")
+        sti = self.series("short_term_investments")
+        combined = self.series("cash_and_sti_combined")
+        # Reconcile within each period, never across the series.
+        separate = cash + sti
         cash_deduction = (
-            total_cash_sti if (total_cash_sti.abs().sum() > 0 or combined.empty) else combined
+            separate.combine_first(combined).combine_first(cash).combine_first(sti).fillna(0.0)
         )
         cur_debt = self.series("current_debt").fillna(0.0)
         return (ca - cash_deduction) - (cl - cur_debt)
@@ -272,28 +276,26 @@ def field_series(source: Any, name: str) -> pd.Series:
     return pd.Series(dtype="float64", name=name)
 
 
-def total_cash_position(source: Any, default: float | None = None) -> float:
-    """Unrestricted cash plus short-term investments, counted exactly once.
+def total_cash_position(
+    source: Any, default: float | None = None, *, includes_restricted: bool = False
+) -> float:
+    """Resolve cash alternatives in the latest reporting period, counted once.
 
-    Providers report this two ways: a pure cash row alongside a separate investments
-    row, or a single combined row. Summing whatever is present double-counts the
-    investments whenever the combined row is the one that survived. The rule is
-    therefore explicit: prefer pure cash plus investments, and fall back to the
-    combined row only when pure cash is unavailable.
-
-    Restricted cash then comes off. It is pledged against something -- collateral, an
-    escrow, a regulatory reserve -- so it is neither distributable to shareholders nor
-    available to the business, and crediting it against enterprise value overstates
-    equity value by its full amount. Providers include it in the headline balance for
-    companies that report it separately.
+    Prefer complete separate fields, then the combined field, then available
+    separate amounts or metadata. Deduct restricted cash only when the caller
+    explicitly states that the reported cash field includes it.
     """
-    cash = field_value(source, "cash")
-    sti = field_value(source, "short_term_investments")
-    combined = field_value(source, "cash_and_sti_combined")
+    cash = current_period_value(source, "cash")
+    sti = current_period_value(source, "short_term_investments")
+    combined = current_period_value(source, "cash_and_sti_combined")
 
     gross = float("nan")
-    if pd.notna(cash):
-        gross = float(cash + (sti if pd.notna(sti) else 0.0))
+    if pd.notna(cash) and pd.notna(sti):
+        gross = float(cash + sti)
+    elif pd.notna(combined):
+        gross = float(combined)
+    elif pd.notna(cash):
+        gross = float(cash)
     elif pd.notna(combined):
         gross = float(combined)
     elif pd.notna(sti):
@@ -306,8 +308,8 @@ def total_cash_position(source: Any, default: float | None = None) -> float:
     if pd.isna(gross):
         return float("nan") if default is None else float(default)
 
-    restricted = field_value(source, "restricted_cash")
-    if pd.isna(restricted) or restricted <= 0:
+    restricted = current_period_value(source, "restricted_cash")
+    if not includes_restricted or pd.isna(restricted) or restricted <= 0:
         return gross
 
     net = gross - float(restricted)
@@ -322,7 +324,7 @@ def total_cash_position(source: Any, default: float | None = None) -> float:
             UserWarning,
             stacklevel=2,
         )
-    return net
+    return max(0.0, net)
 
 
 def info_dict(source: Any) -> dict[str, Any]:
@@ -388,3 +390,28 @@ def field_value(source: Any, name: str, default: float | None = None) -> float:
     if clean.empty:
         return float("nan") if default is None else float(default)
     return float(clean.iloc[-1])
+
+
+def resolved_debt(source: Any) -> float:
+    value = current_period_value(source, "total_debt")
+    if pd.isna(value):
+        value = float(info_dict(source).get("totalDebt") or 0.0)
+    if not __import__("math").isfinite(value) or value < 0:
+        raise ValueError("Debt must be finite and nonnegative")
+    return value
+
+
+def resolved_minority(source: Any) -> float:
+    direct = current_period_value(source, "minority_interest")
+    if pd.notna(direct):
+        return max(0.0, direct)
+    total = current_period_value(source, "total_equity_incl_minority")
+    equity = current_period_value(source, "stockholders_equity")
+    return max(0.0, total - equity) if pd.notna(total) and pd.notna(equity) else 0.0
+
+
+def current_period_value(source: Any, name: str) -> float:
+    """Resolve balance-sheet alternatives in the same reporting period."""
+    if isinstance(source, Financials) and len(source.periods):
+        return float(source.series(name).get(source.periods[-1], float("nan")))
+    return field_value(source, name)

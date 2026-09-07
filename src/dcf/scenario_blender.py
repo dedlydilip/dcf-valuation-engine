@@ -6,6 +6,7 @@ and calculates Graham/Buffett target entry prices across margin-of-safety tiers.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,9 +17,9 @@ DEFAULT_SCENARIO_WEIGHTS: dict[str, float] = {
 }
 
 MARGIN_OF_SAFETY_TIERS: dict[str, float] = {
-    "Wide-Moat Entry (15% discount)": 0.15,
-    "Standard Value (25% discount)": 0.25,
-    "Deep Value / Cyclical (35% discount)": 0.35,
+    "Illustrative 15% discount": 0.15,
+    "Illustrative 25% discount": 0.25,
+    "Illustrative 35% discount": 0.35,
 }
 
 
@@ -55,7 +56,9 @@ def normalize_weights(weights: dict[str, float] | None) -> dict[str, float]:
     if not weights:
         return dict(DEFAULT_SCENARIO_WEIGHTS)
 
-    cleaned = {k: max(0.0, float(v)) for k, v in weights.items()}
+    if any(not math.isfinite(float(v)) or float(v) < 0 for v in weights.values()):
+        raise ValueError("Scenario weights must be finite and nonnegative")
+    cleaned = {k: float(v) for k, v in weights.items()}
     total = sum(cleaned.values())
     if total <= 0:
         return dict(DEFAULT_SCENARIO_WEIGHTS)
@@ -68,10 +71,15 @@ def blend_scenarios(
     weights: dict[str, float] | None = None,
     current_price: float | None = None,
 ) -> ScenarioBlendResult:
-    """Calculate probability-weighted expected fair value and margin-of-safety targets."""
+    """Calculate probability-weighted assumed blended value and margin-of-safety targets."""
     norm_weights = normalize_weights(weights)
     diagnostics: list[str] = []
 
+    if any(s not in scenario_values or not math.isfinite(scenario_values[s]) for s in norm_weights):
+        raise ValueError("Every weighted scenario needs a finite valuation")
+    diagnostics.append(
+        "Weights are analyst assumptions, not calibrated probabilities. Discounts below are illustrations, not buy recommendations."
+    )
     # Enforce limited liability: equity value cannot drop below 0.0 in bankruptcy
     clamped_values = {s: max(0.0, scenario_values.get(s, 0.0)) for s in norm_weights}
 
@@ -87,7 +95,9 @@ def blend_scenarios(
     verdict = "Neutral"
 
     if current_price is not None and current_price > 0:
-        discount_to_expected = 1.0 - (current_price / expected_value) if expected_value > 0 else -1.0
+        discount_to_expected = (
+            1.0 - (current_price / expected_value) if expected_value > 0 else -1.0
+        )
 
         bull_val = clamped_values.get("bull", expected_value)
         bear_val = clamped_values.get("bear", 0.0)
@@ -100,27 +110,29 @@ def blend_scenarios(
             asymmetry = upside_dollars / max(0.01, downside_dollars)
 
         if discount_to_expected >= 0.25:
-            verdict = "Substantial Margin of Safety (Favorable Entry)"
+            verdict = "At least 25% below assumed blended value"
             diagnostics.append(
-                f"Market price (${current_price:,.2f}) trades at a {discount_to_expected:.1%} discount to expected fair value (${expected_value:,.2f})."
+                f"Snapshot price ({current_price:,.2f}) trades at a {discount_to_expected:.1%} discount to assumed blended value ({expected_value:,.2f})."
             )
         elif discount_to_expected >= 0.10:
-            verdict = "Moderate Margin of Safety"
+            verdict = "10-25% below assumed blended value"
             diagnostics.append(
-                f"Market price (${current_price:,.2f}) trades at a {discount_to_expected:.1%} discount to expected fair value."
+                f"Snapshot price ({current_price:,.2f}) trades at a {discount_to_expected:.1%} discount to assumed blended value."
             )
         elif discount_to_expected >= -0.15:
-            verdict = "Fairly Valued"
+            verdict = "Within assumed valuation range"
             diagnostics.append(
-                f"Market price (${current_price:,.2f}) is roughly aligned with expected fair value (${expected_value:,.2f})."
+                f"Snapshot price ({current_price:,.2f}) is roughly aligned with assumed blended value ({expected_value:,.2f})."
             )
         else:
-            verdict = "Demanding Valuation (Negative Margin of Safety)"
+            verdict = "Above assumed blended value"
             diagnostics.append(
-                f"Market price (${current_price:,.2f}) is {abs(discount_to_expected):.1%} above expected fair value (${expected_value:,.2f})."
+                f"Snapshot price ({current_price:,.2f}) is {abs(discount_to_expected):.1%} above assumed blended value ({expected_value:,.2f})."
             )
     else:
-        diagnostics.append("Current market price not supplied; buy targets computed against expected value.")
+        diagnostics.append(
+            "Snapshot price not supplied; illustrative discounts computed from assumed blended value."
+        )
 
     return ScenarioBlendResult(
         scenario_values=scenario_values,

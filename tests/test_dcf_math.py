@@ -79,9 +79,7 @@ class TestDiscounting:
         assert terminal_discount_factor(0.10, 3, mid_year=False) == pytest.approx(1 / 1.331)
         assert terminal_discount_factor(0.10, 3, mid_year=True) == pytest.approx(1 / 1.1**2.5)
 
-    def test_mid_year_convention_raises_the_valuation(
-        self, golden_financials, golden_assumptions
-    ):
+    def test_mid_year_convention_raises_the_valuation(self, golden_financials, golden_assumptions):
         year_end = DCFEngine(golden_financials, golden_assumptions).run().value_per_share
         mid = golden_assumptions.model_copy(deep=True)
         mid.projection.mid_year_convention = True

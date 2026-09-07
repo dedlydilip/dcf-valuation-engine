@@ -1,0 +1,255 @@
+{
+  "AAPL": {
+    "ticker": "AAPL",
+    "current_price": 319.7,
+    "currency": "USD",
+    "base_value": 120.08439792432496,
+    "bear_value": 82.75840003863895,
+    "bull_value": 165.828740752445,
+    "upside": -0.6243841165957931,
+    "wacc": 0.10025028776015515,
+    "cost_of_equity": 0.10173000000000001,
+    "cost_of_debt": 0.03831727443663961,
+    "beta": 1.086,
+    "tv_pct_ev": 0.7104997615604083,
+    "ev": 1796493318499.2249,
+    "equity_value": 1752533318499.2249,
+    "shares": 14594180000.0,
+    "moat": {
+      "invested_capital": 172390000000.0,
+      "nopat": 105109500000.0,
+      "roic": 0.6097192412552932,
+      "spread": 0.509468953495138,
+      "rating": "Wide Moat (Exceptional Capital Efficiency)",
+      "diagnostics": [
+        "Strong economic moat: projected ROIC (61.0%) substantially exceeds WACC (10.0%)."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 0.2887063033069435,
+      "implied_rev_status": "Solved",
+      "implied_margin": 0.8522308643644098,
+      "implied_margin_status": "Solved",
+      "implied_perpetuity_g": 0.0761799251320066,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.021168472841333726,
+      "fcf_yield_forward": 0.025354905974757685,
+      "warnings": [
+        "Implied perpetuity growth is 7.62%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 122.18898415993347,
+      "discount_to_expected": -1.6164388074586484,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 103.86063653594344,
+        "Standard Value (25% discount)": 91.6417381199501,
+        "Deep Value / Cyclical (35% discount)": 79.42283970395675
+      }
+    }
+  },
+  "MSFT": {
+    "ticker": "MSFT",
+    "current_price": 513.53,
+    "currency": "USD",
+    "base_value": 188.9924206708978,
+    "bear_value": 133.1557257431752,
+    "bull_value": 257.1449311693182,
+    "upside": -0.6319739437405842,
+    "wacc": 0.10154360045324129,
+    "cost_of_equity": 0.10244500000000001,
+    "cost_of_debt": 0.05196995247585467,
+    "beta": 1.099,
+    "tv_pct_ev": 0.707031711190022,
+    "ev": 1383546817145.9602,
+    "equity_value": 1403371817145.9602,
+    "shares": 7425545491.0,
+    "moat": {
+      "invested_capital": 482681000000.0,
+      "nopat": 133498150000.0,
+      "roic": 0.2765763516691148,
+      "spread": 0.17503275121587353,
+      "rating": "Wide Moat (Exceptional Capital Efficiency)",
+      "diagnostics": [
+        "Strong economic moat: projected ROIC (27.7%) substantially exceeds WACC (10.2%)."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 0.3074648873300402,
+      "implied_rev_status": "Solved",
+      "implied_margin": null,
+      "implied_margin_status": "> 95% (Exceeds monopoly margin limits)",
+      "implied_perpetuity_g": 0.07829474371477643,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.017566949207221686,
+      "fcf_yield_forward": 0.024189010180958297,
+      "warnings": [
+        "Implied perpetuity growth is 7.83%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 192.07137456357225,
+      "discount_to_expected": -1.6736415104377285,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 163.26066837903642,
+        "Standard Value (25% discount)": 144.0535309226792,
+        "Deep Value / Cyclical (35% discount)": 124.84639346632197
+      }
+    }
+  },
+  "TSLA": {
+    "ticker": "TSLA",
+    "current_price": 348.75,
+    "currency": "USD",
+    "base_value": 8.86088704329724,
+    "bear_value": 8.161099302916377,
+    "bull_value": 9.811660420014006,
+    "upside": -0.9745924385855276,
+    "wacc": 0.14117772328890094,
+    "cost_of_equity": 0.142485,
+    "cost_of_debt": 0.023851527767976853,
+    "beta": 1.827,
+    "tv_pct_ev": 0.5532895256862057,
+    "ev": 6384493330.382978,
+    "equity_value": 34996493330.38298,
+    "shares": 3949547394.0,
+    "moat": {
+      "invested_capital": 90290000000.0,
+      "nopat": 4436640000.0,
+      "roic": 0.049137667515782475,
+      "spread": -0.09204005577311847,
+      "rating": "Value-Destructive (Negative Spread)",
+      "diagnostics": [
+        "WARNING: Negative economic spread (-9.2%). ROIC (4.9%) < WACC (14.1%). Reinvestment and growth at this rate destroy shareholder value."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 1.3071563131248631,
+      "implied_rev_status": "Solved",
+      "implied_margin": null,
+      "implied_margin_status": "> 95% (Exceeds monopoly margin limits)",
+      "implied_perpetuity_g": 0.1408383512246491,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.004515739062942531,
+      "fcf_yield_forward": 0.000580509380284506,
+      "warnings": [
+        "Implied perpetuity growth is 14.08%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 8.923633452381216,
+      "discount_to_expected": -38.081614217013616,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 7.5850884345240335,
+        "Standard Value (25% discount)": 6.692725089285911,
+        "Deep Value / Cyclical (35% discount)": 5.80036174404779
+      }
+    }
+  },
+  "SAP": {
+    "ticker": "SAP",
+    "current_price": 209.69,
+    "currency": "USD",
+    "base_value": 205.85175658942137,
+    "bear_value": 140.1521629807639,
+    "bull_value": 286.90235056576864,
+    "upside": -0.01830437031131016,
+    "wacc": 0.082225387156431,
+    "cost_of_equity": 0.083635,
+    "cost_of_debt": 0.05428366525073095,
+    "beta": 0.757,
+    "tv_pct_ev": 0.7692842759396734,
+    "ev": 235497764116.13098,
+    "equity_value": 237594968620.14404,
+    "shares": 1154204232.0,
+    "moat": {
+      "invested_capital": 58436376384.49669,
+      "nopat": 9861941785.96735,
+      "roic": 0.16876374607963793,
+      "spread": 0.08653835892320692,
+      "rating": "Wide Moat (Exceptional Capital Efficiency)",
+      "diagnostics": [
+        "Strong economic moat: projected ROIC (16.9%) substantially exceeds WACC (8.2%)."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 0.06304814096367689,
+      "implied_rev_status": "Solved",
+      "implied_margin": 0.29847947041559475,
+      "implied_margin_status": "Solved",
+      "implied_perpetuity_g": 0.02629536649353339,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.04034031645101452,
+      "fcf_yield_forward": 0.04913316625207883,
+      "warnings": []
+    },
+    "blended": {
+      "expected_value": 209.68950668134383,
+      "discount_to_expected": -2.352614892231486e-06,
+      "asymmetry_ratio": 1.110364570937252,
+      "verdict": "Fairly Valued",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 178.23608067914225,
+        "Standard Value (25% discount)": 157.26713001100788,
+        "Deep Value / Cyclical (35% discount)": 136.29817934287348
+      }
+    }
+  },
+  "TSM": {
+    "ticker": "TSM",
+    "current_price": 415.5,
+    "currency": "USD",
+    "base_value": 109.2217777416406,
+    "bear_value": 80.21370356616077,
+    "bull_value": 144.86101221486908,
+    "upside": -0.7371317021861838,
+    "wacc": 0.10962603821832714,
+    "cost_of_equity": 0.11119000000000001,
+    "cost_of_debt": 0.01171647538899903,
+    "beta": 1.258,
+    "tv_pct_ev": 0.6812325212717997,
+    "ev": 502692935567.6134,
+    "equity_value": 566475911910.6808,
+    "shares": 5186474013.0,
+    "moat": {
+      "invested_capital": 201489602040.0256,
+      "nopat": 51182179363.50213,
+      "roic": 0.25401896100492005,
+      "spread": 0.1443929227865929,
+      "rating": "Wide Moat (Exceptional Capital Efficiency)",
+      "diagnostics": [
+        "Strong economic moat: projected ROIC (25.4%) substantially exceeds WACC (11.0%)."
+      ]
+    },
+    "reverse_dcf": {
+      "implied_rev_growth": 0.40744643717714035,
+      "implied_rev_status": "Solved",
+      "implied_margin": null,
+      "implied_margin_status": "> 95% (Exceeds monopoly margin limits)",
+      "implied_perpetuity_g": 0.09361314131055334,
+      "implied_growth_status": "Solved",
+      "fcf_yield_trailing": 0.014525129243212951,
+      "fcf_yield_forward": 0.017308830750646615,
+      "warnings": [
+        "Implied perpetuity growth is 9.36%, exceeding long-term global GDP ceiling (3.5%)."
+      ]
+    },
+    "blended": {
+      "expected_value": 110.87956781607775,
+      "discount_to_expected": -2.7473089784153335,
+      "asymmetry_ratio": 0.0,
+      "verdict": "Demanding Valuation (Negative Margin of Safety)",
+      "target_buys": {
+        "Wide-Moat Entry (15% discount)": 94.2476326436661,
+        "Standard Value (25% discount)": 83.15967586205832,
+        "Deep Value / Cyclical (35% discount)": 72.07171908045053
+      }
+    }
+  }
+}

@@ -9,9 +9,11 @@ stock-based compensation is charged EITHER as an expense OR as dilution, never b
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,7 +53,19 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 class _Base(BaseModel):
-    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, allow_inf_nan=False)
+
+    def __setattr__(self, name, value):
+        # Pydantic's after validators can fail after mutating a field. Restore the
+        # complete state so a rejected assignment never leaves invalid assumptions.
+        previous = self.__dict__.copy()
+        fields_set = self.__pydantic_fields_set__.copy()
+        try:
+            super().__setattr__(name, value)
+        except (ValueError, TypeError):
+            object.__setattr__(self, "__dict__", previous)
+            object.__setattr__(self, "__pydantic_fields_set__", fields_set)
+            raise
 
 
 class ProjectionAssumptions(_Base):
@@ -63,6 +77,8 @@ class ProjectionAssumptions(_Base):
     capex_pct_revenue: Series | None = None
     nwc_pct_revenue: Series | None = None
     mid_year_convention: bool = True
+    starting_nol: float = Field(0.0, ge=0.0)
+    margin_basis: Literal["after_sbc", "before_sbc"] = "after_sbc"
     fade_capex_to_da: bool = False
     terminal_capex_to_da: float = Field(1.0, ge=0.5, le=5.0)
 
@@ -80,13 +96,31 @@ class ProjectionAssumptions(_Base):
                 raise ValueError(
                     f"projection.{name} has {len(val)} values but projection.years is {self.years}"
                 )
+        bounds = {
+            "revenue_growth": (-1.0, 10.0),
+            "ebit_margin": (-5.0, 1.0),
+            "da_pct_revenue": (0.0, 5.0),
+            "capex_pct_revenue": (0.0, 5.0),
+            "nwc_pct_revenue": (-5.0, 5.0),
+        }
+        for name, (lo, hi) in bounds.items():
+            val = getattr(self, name)
+            for x in val if isinstance(val, list) else [val]:
+                if x is not None and (
+                    not math.isfinite(x)
+                    or x < lo
+                    or x > hi
+                    or (name == "revenue_growth" and x == -1)
+                ):
+                    raise ValueError(f"projection.{name} outside supported finite domain")
         return self
 
 
 class WACCAssumptions(_Base):
     risk_free_rate: float = Field(0.042, ge=0.0, le=0.25)
     equity_risk_premium: float = Field(0.055, gt=0.0, le=0.20)
-    beta_override: float | None = None
+    beta_override: float | None = Field(None, ge=-5.0, le=10.0)
+    discount_rate_override: float | None = Field(None, gt=0.0, le=1.0)
     cost_of_debt_override: float | None = Field(None, ge=0.0, le=0.50)
     size_premium: float = Field(0.0, ge=0.0, le=0.10)
     country_risk_premium: float = Field(0.0, ge=0.0, le=0.20)
@@ -98,7 +132,7 @@ class WACCAssumptions(_Base):
 class SBCAssumptions(_Base):
     """Stock-based compensation policy.
 
-    The two treatments are economically equivalent and mutually exclusive:
+    The two treatments are alternative approximations and mutually exclusive:
 
       expense -- SBC stays an operating cost inside EBIT, and the share count is
                  held at the current diluted figure plus treasury-stock overhang.
@@ -121,6 +155,14 @@ class SBCAssumptions(_Base):
     deduct_from_fcf: bool | None = None
     grow_share_count: bool | None = None
 
+    def __setattr__(self, name, value):
+        if name == "method" and hasattr(self, "method"):
+            if value not in ("expense", "dilute"):
+                raise ValueError("invalid SBC method")
+            object.__setattr__(self, "deduct_from_fcf", value == "expense")
+            object.__setattr__(self, "grow_share_count", value == "dilute")
+        super().__setattr__(name, value)
+
     @model_validator(mode="after")
     def _resolve_and_guard(self) -> SBCAssumptions:
         if self.deduct_from_fcf is None:
@@ -141,6 +183,14 @@ class SBCAssumptions(_Base):
                 "false, which treats stock compensation as free. That is the error this "
                 "model exists to avoid."
             )
+        if self.grow_share_count != (self.method == "dilute"):
+            raise ValueError("SBC method and policy flags disagree")
+        for name in ("sbc_pct_revenue", "sbc_pct_sga", "explicit"):
+            val = getattr(self, name)
+            if val is not None and any(
+                not math.isfinite(x) or x < 0 for x in (val if isinstance(val, list) else [val])
+            ):
+                raise ValueError(f"sbc.{name} must be finite and nonnegative")
         if self.forecast_method == "explicit" and not self.explicit:
             raise ValueError("sbc.forecast_method is explicit but sbc.explicit is empty")
         return self
@@ -163,6 +213,7 @@ class BridgeAssumptions(_Base):
     preferred_equity: float | None = None
     investments: float | None = None
     include_investments: bool = False
+    cash_includes_restricted: bool = False
 
 
 class CompsAssumptions(_Base):
@@ -184,6 +235,13 @@ class MonteCarloAssumptions(_Base):
     corr_wacc_growth: float = Field(0.35, ge=-0.99, le=0.99)
     corr_wacc_margin: float = Field(-0.15, ge=-0.99, le=0.99)
     corr_growth_margin: float = Field(0.25, ge=-0.99, le=0.99)
+
+    @model_validator(mode="after")
+    def _valid_correlation(self):
+        a, b, c = self.corr_wacc_growth, self.corr_wacc_margin, self.corr_growth_margin
+        if np.linalg.eigvalsh([[1, a, b], [a, 1, c], [b, c, 1]]).min() <= 1e-10:
+            raise ValueError("Monte Carlo correlation matrix must be positive definite")
+        return self
 
 
 class SensitivityAssumptions(_Base):
@@ -261,6 +319,7 @@ class DCFAssumptions(_Base):
     quality: QualityAssumptions = Field(default_factory=QualityAssumptions)
     currency: CurrencyAssumptions = Field(default_factory=CurrencyAssumptions)
 
+    valuation_date: str | None = None
     scenario: str = "base"
 
     @model_validator(mode="after")
@@ -268,8 +327,7 @@ class DCFAssumptions(_Base):
         years = self.projection.years
         if self.sbc.explicit is not None and len(self.sbc.explicit) != years:
             raise ValueError(
-                f"sbc.explicit has {len(self.sbc.explicit)} values "
-                f"but projection.years is {years}"
+                f"sbc.explicit has {len(self.sbc.explicit)} values but projection.years is {years}"
             )
         if isinstance(self.sbc.sbc_pct_revenue, list) and len(self.sbc.sbc_pct_revenue) != years:
             raise ValueError(
@@ -306,9 +364,7 @@ class DCFAssumptions(_Base):
         if scenarios_path is not None:
             resolved_scenarios = resolve_config_path(scenarios_path)
             if resolved_scenarios.exists():
-                scenarios = (
-                    yaml.safe_load(resolved_scenarios.read_text(encoding="utf-8")) or {}
-                )
+                scenarios = yaml.safe_load(resolved_scenarios.read_text(encoding="utf-8")) or {}
                 if scenario not in scenarios:
                     raise ValueError(
                         f"unknown scenario {scenario!r}; available: {sorted(scenarios)}"

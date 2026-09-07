@@ -54,16 +54,16 @@ LEFT_INDENT = Alignment(horizontal="left", indent=1)
 WRAP = Alignment(wrap_text=True, vertical="top")
 
 # Number formats. The double comma displays a value in millions without altering it.
-MONEY_M = '#,##0;(#,##0)'
-MONEY_MM = '#,##0,,;(#,##0,,)'
-MONEY_RAW = '#,##0;(#,##0)'
-PRICE = '$#,##0.00;($#,##0.00)'
-PERCENT = '0.0%;(0.0%)'
-PERCENT_2 = '0.00%;(0.00%)'
+MONEY_M = "#,##0;(#,##0)"
+MONEY_MM = "#,##0,,;(#,##0,,)"
+MONEY_RAW = "#,##0;(#,##0)"
+PRICE = "$#,##0.00;($#,##0.00)"
+PERCENT = "0.0%;(0.0%)"
+PERCENT_2 = "0.00%;(0.00%)"
 MULTIPLE = '0.0"x"'
-SHARES_MM = '#,##0.0,,;(#,##0.0,,)'
-RATIO = '0.00'
-INTEGER = '#,##0'
+SHARES_MM = "#,##0.0,,;(#,##0.0,,)"
+RATIO = "0.00"
+INTEGER = "#,##0"
 
 
 def col_width(worksheet, widths: dict[str, float]) -> None:

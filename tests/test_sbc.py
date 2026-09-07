@@ -52,8 +52,8 @@ class TestDoubleCountGuard:
 
 
 class TestFCFBridge:
-    def test_three_definitions_differ_by_after_tax_sbc(self, tech_financials):
-        """SBC-neutral FCF exceeds adjusted FCF by exactly the after-tax add-back."""
+    def test_three_definitions_preserve_sbc_tax_deduction(self, tech_financials):
+        """SBC-neutral FCF exceeds adjusted FCF by the gross noncash charge, preserving the cash tax deduction."""
         assumptions = DCFAssumptions.model_validate(
             {
                 "projection": {"years": 3, "revenue_growth": 0.0, "tax_rate": 0.25},
@@ -65,7 +65,7 @@ class TestFCFBridge:
 
         for year in table.columns:
             gap = table.loc["sbc_neutral_fcf", year] - table.loc["adjusted_fcf", year]
-            assert gap == pytest.approx(table.loc["sbc", year] * 0.75)
+            assert gap == pytest.approx(table.loc["sbc", year])
 
     def test_expense_method_discounts_the_expensed_series(self, tech_financials):
         assumptions = DCFAssumptions.model_validate({"sbc": {"method": "expense"}})
@@ -143,7 +143,7 @@ class TestDilutionSolver:
         """
         assumptions = DCFAssumptions.model_validate(
             {
-                "projection": {"years": 5, "revenue_growth": 0.0},
+                "projection": {"years": 5, "revenue_growth": 0.0, "margin_basis": "before_sbc"},
                 "sbc": {"method": "dilute", "sbc_pct_revenue": 3.0},
             }
         )
@@ -176,9 +176,9 @@ class TestMethodEquivalence:
             assumptions = DCFAssumptions.model_validate(
                 {"sbc": {"method": method, "sbc_pct_revenue": 0.05}}
             )
-            results[method] = DCFEngine(
-                tech_financials, assumptions, ticker="TECH"
-            ).run().value_per_share
+            results[method] = (
+                DCFEngine(tech_financials, assumptions, ticker="TECH").run().value_per_share
+            )
 
         gap = abs(results["dilute"] / results["expense"] - 1.0)
         assert gap < 0.05, f"methods diverged by {gap:.1%}: {results}"
@@ -191,16 +191,12 @@ class TestMethodEquivalence:
         """
         expense = DCFEngine(
             tech_financials,
-            DCFAssumptions.model_validate(
-                {"sbc": {"method": "expense", "sbc_pct_revenue": 0.05}}
-            ),
+            DCFAssumptions.model_validate({"sbc": {"method": "expense", "sbc_pct_revenue": 0.05}}),
             ticker="TECH",
         ).run()
         dilute = DCFEngine(
             tech_financials,
-            DCFAssumptions.model_validate(
-                {"sbc": {"method": "dilute", "sbc_pct_revenue": 0.05}}
-            ),
+            DCFAssumptions.model_validate({"sbc": {"method": "dilute", "sbc_pct_revenue": 0.05}}),
             ticker="TECH",
         ).run()
 
@@ -209,31 +205,24 @@ class TestMethodEquivalence:
         assert gap > 0.05, "the 5% bound would not catch dilution being dropped"
         assert gap < 0.15, "which is exactly why the old 15% bound passed regardless"
 
-    @pytest.mark.parametrize(
-        "ticker,expected_gap", [("AAPL", 0.005), ("MSFT", 0.009), ("TSLA", 0.012)]
-    )
-    def test_the_readme_convergence_figures_are_current(self, ticker, expected_gap):
-        """The README quotes 0.5% / 0.8% / 3.9%. Pinned so they cannot go stale.
-
-        An earlier README claimed the two treatments agreed "within 0.5-0.8%",
-        generalising from two companies while its own results table listed three.
-        """
-        import warnings
-
+    @pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "TSLA"])
+    def test_sbc_method_gap_equals_discount_timing_difference(self, ticker):
+        """An algebraic reconciliation, not an assumed equivalence percentage."""
         from src.fetcher.yfinance_client import YFinanceClient
 
-        warnings.simplefilter("ignore")
-        financials = YFinanceClient(ticker, offline_mode=True).get_financials()
-        values = {}
-        for method in ("expense", "dilute"):
-            assumptions = DCFAssumptions.from_yaml(overrides={"sbc": {"method": method}})
-            values[method] = DCFEngine(
-                financials, assumptions, ticker=ticker
-            ).run().value_per_share
-
-        gap = abs(values["dilute"] / values["expense"] - 1.0)
-        assert gap == pytest.approx(expected_gap, abs=0.001), (
-            f"{ticker} convergence gap is now {gap:.1%}; the README says {expected_gap:.1%}"
+        fin = YFinanceClient(ticker, offline_mode=True).get_financials()
+        expense = DCFEngine(
+            fin, DCFAssumptions.from_yaml(overrides={"sbc": {"method": "expense"}})
+        ).run()
+        dilute = DCFEngine(
+            fin, DCFAssumptions.from_yaml(overrides={"sbc": {"method": "dilute"}})
+        ).run()
+        gross = expense.projection.table.loc["sbc"].tolist()
+        cash_pv = sum(s * d for s, d in zip(gross, expense.discount_factors, strict=True))
+        issued_pv = sum(s / (1 + expense.wacc.cost_of_equity) ** t for t, s in enumerate(gross, 1))
+        expected_gap = (cash_pv - issued_pv) / expense.bridge.shares
+        assert dilute.value_per_share - expense.value_per_share == pytest.approx(
+            expected_gap, abs=1e-9
         )
 
     def test_enterprise_value_is_higher_under_dilute(self, tech_financials):

@@ -54,9 +54,7 @@ class TestOfflineFixturePathResolution:
         constant left this broken while the test above went green.
         """
         monkeypatch.chdir(tmp_path)
-        client = YFinanceClient(
-            "AAPL", offline_mode=True, offline_path="data/offline_sample/AAPL"
-        )
+        client = YFinanceClient("AAPL", offline_mode=True, offline_path="data/offline_sample/AAPL")
         assert client.offline_path.exists()
 
     def test_cli_values_a_company_from_any_working_directory(self, tmp_path, monkeypatch):
@@ -81,9 +79,7 @@ class TestOfflineFixturePathResolution:
         """Guards both audits at once: the fixtures resolve AND the overrides apply."""
         monkeypatch.chdir(tmp_path)
         warnings.simplefilter("ignore")
-        result = CliRunner().invoke(
-            cli, ["scenarios", "--ticker", "AAPL", "--use-offline"]
-        )
+        result = CliRunner().invoke(cli, ["scenarios", "--ticker", "AAPL", "--use-offline"])
         assert result.exit_code == 0, result.output
         values = []
         for line in result.output.splitlines():
@@ -108,9 +104,10 @@ class TestOfflineFixturePathResolution:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "data" / "offline_sample" / "AAPL").mkdir(parents=True)
         client = YFinanceClient("AAPL", offline_mode=True)
-        assert client.offline_path.resolve() == (
-            tmp_path / "data" / "offline_sample" / "AAPL"
-        ).resolve()
+        assert (
+            client.offline_path.resolve()
+            == (tmp_path / "data" / "offline_sample" / "AAPL").resolve()
+        )
 
     def test_absolute_paths_pass_through_untouched(self, tmp_path):
         assert resolve_path(tmp_path) == tmp_path
@@ -145,9 +142,7 @@ class TestOptionOverhangSymmetry:
         return DCFEngine(financials, assumptions, ticker="AAPL").run(), financials
 
     def test_both_methods_include_the_overhang_in_the_opening_count(self):
-        base = base_share_count(
-            YFinanceClient("AAPL", offline_mode=True).get_financials()
-        )
+        base = base_share_count(YFinanceClient("AAPL", offline_mode=True).get_financials())
         overhang = 0.05 * base
 
         expense, _ = self._run("expense", overhang)
@@ -160,9 +155,7 @@ class TestOptionOverhangSymmetry:
         assert dilute.bridge.shares > expense.bridge.shares
 
     def test_the_overhang_moves_both_methods_by_the_same_opening_amount(self):
-        base = base_share_count(
-            YFinanceClient("AAPL", offline_mode=True).get_financials()
-        )
+        base = base_share_count(YFinanceClient("AAPL", offline_mode=True).get_financials())
         overhang = 0.05 * base
 
         without, _ = self._run("dilute", None)
@@ -176,9 +169,7 @@ class TestOptionOverhangSymmetry:
 
     def test_methods_still_converge_with_a_non_zero_overhang(self):
         """The convergence claim must survive the knob, not only its default."""
-        base = base_share_count(
-            YFinanceClient("AAPL", offline_mode=True).get_financials()
-        )
+        base = base_share_count(YFinanceClient("AAPL", offline_mode=True).get_financials())
         expense, _ = self._run("expense", 0.05 * base)
         dilute, _ = self._run("dilute", 0.05 * base)
         gap = abs(dilute.value_per_share / expense.value_per_share - 1.0)
@@ -224,9 +215,7 @@ class TestClosedFormGuards:
         base = base_share_count(financials)
         overhang = 0.05 * base
         assumptions = DCFAssumptions.from_yaml(
-            overrides={
-                "sbc": {"method": "dilute", "option_overhang_shares": overhang}
-            }
+            overrides={"sbc": {"method": "dilute", "option_overhang_shares": overhang}}
         )
         engine = DCFEngine(financials, assumptions, ticker="AAPL")
         result = engine.run()
@@ -263,9 +252,7 @@ class TestBridgeInputsAreSourced:
         financials = make_financials(preferred_equity=5_000.0)
         assumptions = DCFAssumptions()
         with_preferred = build_bridge(100_000.0, financials, assumptions, 1_000.0)
-        without = build_bridge(
-            100_000.0, make_financials(), assumptions, 1_000.0
-        )
+        without = build_bridge(100_000.0, make_financials(), assumptions, 1_000.0)
         assert with_preferred.preferred_equity == pytest.approx(5_000.0)
         assert without.equity_value - with_preferred.equity_value == pytest.approx(5_000.0)
 
@@ -284,7 +271,7 @@ class TestBridgeInputsAreSourced:
 
         financials = make_financials(cash=1_000.0, restricted_cash=300.0)
         with pytest.warns(UserWarning, match="Restricted cash"):
-            assert total_cash_position(financials) == pytest.approx(700.0)
+            assert total_cash_position(financials, includes_restricted=True) == pytest.approx(700.0)
 
     def test_immaterial_restricted_cash_deducts_without_shouting(self):
         from src.models.financials import total_cash_position
@@ -293,7 +280,7 @@ class TestBridgeInputsAreSourced:
         financials = make_financials(cash=1_000.0, restricted_cash=10.0)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            assert total_cash_position(financials) == pytest.approx(990.0)
+            assert total_cash_position(financials, includes_restricted=True) == pytest.approx(990.0)
 
     def test_uncounted_long_term_investments_are_surfaced(self):
         """Deliberately warned about rather than added -- see the note in build_bridge."""
@@ -302,17 +289,15 @@ class TestBridgeInputsAreSourced:
         with pytest.warns(UserWarning, match="long-term investments"):
             build_bridge(1_800_000_000_000.0, financials, DCFAssumptions(), 15e9)
 
-    def test_the_sample_valuations_did_not_move(self):
-        """This whole stage must be a no-op on the committed fixtures."""
+    def test_corrected_sample_valuations_are_pinned(self):
+        """Pins include the correction matching historical interest to its own debt period."""
         warnings.simplefilter("ignore")
-        expected = {"AAPL": 120.08, "MSFT": 165.06, "TSLA": 28.63}
+        expected = {"AAPL": 120.2420, "MSFT": 165.06, "TSLA": 28.63}
         for ticker, value in expected.items():
             financials = YFinanceClient(ticker, offline_mode=True).get_financials()
-            result = DCFEngine(
-                financials, DCFAssumptions.from_yaml(), ticker=ticker
-            ).run()
+            result = DCFEngine(financials, DCFAssumptions.from_yaml(), ticker=ticker).run()
             assert result.value_per_share == pytest.approx(value, abs=0.01), (
-                f"{ticker} moved to {result.value_per_share:.2f}; the README table and "
+                f"{ticker} moved to {result.value_per_share:.2f}; the corrected fixture record and "
                 f"the audit record both quote {value:.2f}"
             )
 
@@ -334,9 +319,9 @@ class TestNonFiniteCellsAreActuallyChecked:
         book = Workbook()
         sheet = book.active
         sheet["A1"], sheet["A2"], sheet["A3"] = math.inf, -math.inf, math.nan
-        assert all(
-            isinstance(sheet[c].value, float) for c in ("A1", "A2", "A3")
-        ), "in memory the value is still a float -- this is where it can be caught"
+        assert all(isinstance(sheet[c].value, float) for c in ("A1", "A2", "A3")), (
+            "in memory the value is still a float -- this is where it can be caught"
+        )
 
         path = tmp_path / "nonfinite.xlsx"
         book.save(path)
@@ -405,12 +390,13 @@ class TestDualClassShareCount:
     def _run(ticker: str):
         warnings.simplefilter("ignore")
         financials = YFinanceClient(ticker, offline_mode=True).get_financials()
-        return DCFEngine(
-            financials, DCFAssumptions.from_yaml(), ticker=ticker
-        ).run(), financials
+        return DCFEngine(financials, DCFAssumptions.from_yaml(), ticker=ticker).run(), financials
 
     @pytest.mark.parametrize(
-        "ticker,expected", [("NKE", 35.70), ("GOOGL", 76.86), ("META", 199.87)]
+        # GOOGL now includes FY2025 D&A through the per-period alias fallback,
+        # correcting the stale historical depreciation ratio in the old fixture run.
+        "ticker,expected",
+        [("NKE", 35.70), ("GOOGL", 75.5526), ("META", 199.87)],
     )
     def test_dual_class_uses_the_total_share_count(self, ticker, expected):
         result, _ = self._run(ticker)
@@ -435,9 +421,7 @@ class TestDualClassShareCount:
     @pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "TSLA"])
     def test_single_class_companies_are_untouched(self, ticker):
         result, financials = self._run(ticker)
-        assert result.bridge.shares == pytest.approx(
-            financials.info["sharesOutstanding"], rel=0.02
-        )
+        assert result.bridge.shares == pytest.approx(financials.info["sharesOutstanding"], rel=0.02)
 
     def test_a_disagreeing_count_warns(self):
         from src.dcf.bridge import base_share_count

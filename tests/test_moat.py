@@ -44,8 +44,8 @@ def test_moat_analysis_aapl(aapl_financials):
     assert len(moat.projected_roics) == assumptions.projection.years
     assert len(moat.projected_spreads) == assumptions.projection.years
     assert moat.moat_rating in [
-        "Wide Moat (Exceptional Capital Efficiency)",
-        "Narrow Moat (Value-Accretive)",
+        "High accounting return spread (moat unverified)",
+        "Positive accounting return spread (moat unverified)",
         "Neutral / Cost of Capital Returns",
         "Value-Destructive (Negative Spread)",
     ]

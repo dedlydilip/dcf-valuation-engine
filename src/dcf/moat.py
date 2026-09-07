@@ -75,15 +75,19 @@ def _resolve_invested_capital(financials: Any) -> float:
 
     # Operating assets fallback: Net PPE + Operating Working Capital
     net_ppe = field_value(financials, "net_ppe", 0.0)
-    nwc = field_value(financials, "working_capital", 0.0)
+    nwc_series = (
+        financials.net_working_capital().dropna()
+        if hasattr(financials, "net_working_capital")
+        else pd.Series(dtype=float)
+    )
+    nwc = float(nwc_series.iloc[-1]) if len(nwc_series) else float("nan")
     op_ic = (net_ppe if pd.notna(net_ppe) else 0.0) + (nwc if pd.notna(nwc) else 0.0)
 
     if pd.notna(op_ic) and op_ic > 0:
         return float(op_ic)
 
     # Absolute fallback: positive fraction of revenue to avoid division by zero
-    revenue = field_value(financials, "revenue", 1000.0)
-    return float(max(revenue * 0.25, 100.0))
+    return float("nan")
 
 
 def analyze_moat(financials: Any, result: ValuationResult) -> MoatAnalysis:
@@ -94,12 +98,28 @@ def analyze_moat(financials: Any, result: ValuationResult) -> MoatAnalysis:
 
     # Historical / Base year NOPAT
     base_ebit = field_value(financials, "ebit")
-    if pd.isna(base_ebit) or base_ebit <= 0:
-        base_ebit = float(result.projection.table.loc["ebit"].iloc[0])
-    base_nopat = float(base_ebit * (1.0 - tax_rate))
+    if pd.isna(base_ebit):
+        base_ebit = float("nan")
+    base_nopat = float(base_ebit - max(base_ebit, 0) * tax_rate)
 
     ic_base = _resolve_invested_capital(financials)
-    roic_base = base_nopat / ic_base if ic_base > 0 else 0.0
+    if pd.isna(ic_base) or ic_base <= 0:
+        return MoatAnalysis(
+            ic_base,
+            base_nopat,
+            float("nan"),
+            wacc,
+            float("nan"),
+            is_value_accretive=False,
+            moat_rating="Unavailable: capital base unsupported",
+            diagnostics=[
+                "ROIC unavailable: no defensible invested-capital denominator. No moat conclusion can be made."
+            ],
+        )
+    diagnostics.append(
+        "Accounting ROIC is a capital-efficiency diagnostic, not evidence of a durable competitive moat. Review capital definition, R&D and acquisitions."
+    )
+    roic_base = base_nopat / ic_base
     spread_base = roic_base - wacc
 
     # Projected ROIC series tracking reinvestment: IC_t = IC_{t-1} + (CapEx - D&A + NWC_inv)
@@ -121,26 +141,31 @@ def analyze_moat(financials: Any, result: ValuationResult) -> MoatAnalysis:
         reinvestment_rates.append(reinvest_rate)
 
         # ROIC is return on opening capital of year t
-        roic_t = nopat_t / current_ic if current_ic > 0 else 0.0
+        roic_t = nopat_t / current_ic if current_ic > 0 else float("nan")
         projected_roics.append(roic_t)
         projected_spreads.append(roic_t - wacc)
 
         # Reinvestment builds invested capital for next year
-        current_ic = max(current_ic + reinvestment, 1.0)
+        current_ic = current_ic + reinvestment
+        if current_ic <= 0:
+            diagnostics.append(
+                "Projected capital becomes nonpositive; subsequent ROIC is unavailable."
+            )
 
     # Moat strength assessment
     avg_spread = (
         sum(projected_spreads) / len(projected_spreads) if projected_spreads else spread_base
     )
+    avg_spread = spread_base
     is_accretive = avg_spread > 0
 
     if avg_spread >= 0.10:
-        rating = "Wide Moat (Exceptional Capital Efficiency)"
+        rating = "High accounting return spread (moat unverified)"
         diagnostics.append(
-            f"Strong economic moat: projected ROIC ({roic_base:.1%}) substantially exceeds WACC ({wacc:.1%})."
+            f"Historical accounting ROIC ({roic_base:.1%}) substantially exceeds WACC ({wacc:.1%})."
         )
     elif avg_spread >= 0.02:
-        rating = "Narrow Moat (Value-Accretive)"
+        rating = "Positive accounting return spread (moat unverified)"
         diagnostics.append(
             f"Value-accretive: ROIC ({roic_base:.1%}) generates a positive spread of {spread_base:+.1%} over WACC."
         )

@@ -34,13 +34,13 @@ def test_blend_scenarios_math():
     assert blend.expected_value == pytest.approx(120.0)
 
     # 15% discount target = 120 * 0.85 = 102
-    assert blend.target_buy_prices["Wide-Moat Entry (15% discount)"] == pytest.approx(102.0)
+    assert blend.target_buy_prices["Illustrative 15% discount"] == pytest.approx(102.0)
     # 25% discount target = 120 * 0.75 = 90
-    assert blend.target_buy_prices["Standard Value (25% discount)"] == pytest.approx(90.0)
+    assert blend.target_buy_prices["Illustrative 25% discount"] == pytest.approx(90.0)
 
     # Discount to expected: (120 - 100) / 120 = 16.67%
     assert blend.discount_to_expected == pytest.approx(20.0 / 120.0)
-    assert blend.verdict == "Moderate Margin of Safety"
+    assert blend.verdict == "10-25% below assumed blended value"
 
 
 def test_blend_scenarios_limited_liability_clamping():

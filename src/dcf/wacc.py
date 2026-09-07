@@ -30,6 +30,7 @@ from src.models.financials import (
     field_series,
     field_value,
     info_dict,
+    resolved_debt,
     total_cash_position,
 )
 
@@ -161,18 +162,20 @@ class WACCCalculator:
     def total_debt(self) -> float:
         if self._total_debt is not None:
             return float(self._total_debt)
-        value = field_value(self.financials, "total_debt")
-        if pd.notna(value):
-            return value
-        info = info_dict(self.financials)
-        return float(info["totalDebt"]) if info.get("totalDebt") else 0.0
+        return resolved_debt(self.financials)
 
     @property
     def cash(self) -> float:
         """Cash plus short-term investments: both are available to retire debt."""
         if self._cash is not None:
             return float(self._cash)
-        return total_cash_position(self.financials, default=0.0)
+        return total_cash_position(
+            self.financials,
+            default=0.0,
+            includes_restricted=bool(
+                self._assumptions and self._assumptions.bridge.cash_includes_restricted
+            ),
+        )
 
     @property
     def interest_expense(self) -> float:
@@ -215,30 +218,23 @@ class WACCCalculator:
             return self.risk_free_rate
 
         average_debt = self._average_debt()
-        implied = interest / average_debt if average_debt > 0 else interest / debt
+        if not math.isfinite(average_debt) or average_debt <= 0:
+            warnings.warn(
+                "Interest expense has no matching-period positive debt balance; cost of debt uses the risk-free fallback. Supply a market borrowing-rate override.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return self.risk_free_rate
+        implied = interest / average_debt
         if not math.isfinite(implied):
             return self.risk_free_rate
         rate = min(max(implied, COST_OF_DEBT_FLOOR), COST_OF_DEBT_CEILING)
 
-        # A cost of debt below the risk-free rate is not automatically wrong: a company
-        # that termed out at 2% coupons in 2021 really does pay less than today's
-        # Treasury. It is deliberately NOT clamped to rf plus a spread, because that
-        # would overwrite a real fact about the balance sheet with an assumption.
-        #
-        # What it does reliably indicate is worth saying out loud, because the usual
-        # cause is a vintage mismatch: when the latest period reports no interest
-        # expense the model reaches back a year, pairing an older interest figure with
-        # a current average debt balance. On the shipped Apple fixture that is exactly
-        # what happens -- FY2023 interest against FY2024-25 average debt, 3.83% against
-        # a 4.20% risk-free rate.
         if rate < self.risk_free_rate:
             warnings.warn(
-                f"Cost of debt ({rate:.2%}) is below the risk-free rate "
-                f"({self.risk_free_rate:.2%}). Legacy low-coupon debt can genuinely do "
-                f"this, but check the vintages first: if interest expense is missing "
-                f"from the latest period the model pairs an earlier year's interest "
-                f"with current debt, which understates the rate. Set "
-                f"wacc.cost_of_debt_override to state it explicitly.",
+                f"Cost of debt ({rate:.2%}) is below the risk-free rate ({self.risk_free_rate:.2%}). "
+                "This is a historical book yield using debt from the interest-expense period, "
+                "not a current borrowing yield. Supply wacc.cost_of_debt_override for a market rate.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -251,10 +247,21 @@ class WACCCalculator:
         full year of interest with a single year-end balance overstates the rate for
         a company that paid debt down during the period.
         """
-        series = pd.to_numeric(field_series(self.financials, "total_debt"), errors="coerce").dropna()
+        series = pd.to_numeric(
+            field_series(self.financials, "total_debt"), errors="coerce"
+        ).dropna()
+        if isinstance(self.financials, Financials) and self._interest_expense is None:
+            interest_series = pd.to_numeric(
+                field_series(self.financials, "interest_expense"), errors="coerce"
+            ).dropna()
+            if not interest_series.empty:
+                period = interest_series.index[-1]
+                if period not in series.index:
+                    return float("nan")
+                series = series.loc[:period]
         if len(series) >= 2:
             return float(series.iloc[-2:].mean())
-        return self.total_debt
+        return float(series.iloc[-1]) if not series.empty else self.total_debt
 
     @property
     def after_tax_cost_of_debt(self) -> float:
@@ -286,6 +293,8 @@ class WACCCalculator:
 
     @property
     def wacc(self) -> float:
+        if self._wacc_assumptions.discount_rate_override is not None:
+            return self._wacc_assumptions.discount_rate_override
         return self.equity_weight * self.cost_of_equity + self.debt_weight * (
             self.after_tax_cost_of_debt
         )

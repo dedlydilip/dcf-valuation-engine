@@ -14,6 +14,7 @@ import pandas as pd
 
 from src.dcf.engine import DCFEngine, ValuationResult, terminal_discount_factor
 from src.models.assumptions import DCFAssumptions
+from src.models.errors import ValuationError
 
 
 @dataclass
@@ -36,12 +37,12 @@ def _revalue(
 ) -> float:
     """Re-run the valuation with patched assumptions, returning value per share."""
     patched = assumptions.model_copy(deep=True)
-    for path, value in overrides.items():
-        section, key = path.split(".", 1)
-        setattr(getattr(patched, section), key, value)
     try:
+        for path, value in overrides.items():
+            section, key = path.split(".", 1)
+            setattr(getattr(patched, section), key, value)
         return DCFEngine(financials, patched, comps, ticker=ticker).run().value_per_share
-    except Exception:
+    except (ValueError, ArithmeticError, ValuationError):
         # A cell can legitimately be undefined -- WACC below the perpetuity growth
         # rate, for instance. Blank is the correct entry, not a crash.
         return float("nan")
@@ -74,9 +75,8 @@ def wacc_vs_growth(
                 assumptions,
                 comps,
                 {
-                    "wacc.cost_of_debt_override": None,
+                    "wacc.discount_rate_override": wacc,
                     "terminal.perpetuity_growth": growth,
-                    "wacc.beta_override": _beta_for_wacc(base_result, wacc),
                 },
                 ticker,
             )
@@ -126,7 +126,7 @@ def wacc_vs_exit_multiple(
                     "terminal.mature_industry_multiple": min(
                         forced.terminal.mature_industry_multiple, multiple
                     ),
-                    "wacc.beta_override": _beta_for_wacc(base_result, wacc),
+                    "wacc.discount_rate_override": wacc,
                 },
                 ticker,
             )
@@ -158,9 +158,11 @@ def _beta_for_wacc(base_result: ValuationResult, target_wacc: float) -> float:
     premium = calc.equity_risk_premium
     if premium <= 0:
         return calc.beta
-    return (
+    levered = (
         required_coe - calc.risk_free_rate - calc.size_premium - calc.country_risk_premium
     ) / premium
+    factor = calc.beta / calc.raw_beta if calc.raw_beta else 1.0
+    return levered / factor
 
 
 def football_field(
@@ -178,7 +180,17 @@ def football_field(
     """
     rows: list[dict[str, Any]] = []
     shares = shares or base_result.bridge.shares
-    net_debt = net_debt if net_debt is not None else base_result.bridge.net_debt
+    bridge = base_result.bridge
+    net_debt = (
+        net_debt
+        if net_debt is not None
+        else (
+            bridge.net_debt
+            + bridge.minority_interest
+            + bridge.preferred_equity
+            - bridge.investments
+        )
+    )
 
     if sensitivity is not None:
         values = sensitivity.frame.to_numpy(dtype="float64").ravel()
@@ -211,7 +223,12 @@ def football_field(
         )
 
     if comps_implied is not None and not comps_implied.empty:
-        per_share = (comps_implied["implied_ev"] - net_debt) / shares
+        from src.dcf.bridge import base_share_count
+
+        current_shares = base_share_count(base_result.financials) + (
+            base_result.assumptions.sbc.option_overhang_shares or 0
+        )
+        per_share = (comps_implied["implied_ev"] - net_debt) / current_shares
         per_share = per_share[pd.notna(per_share)]
         if not per_share.empty:
             rows.append(
@@ -270,4 +287,16 @@ def _per_share_from_tv(
         - bridge.preferred_equity
         + bridge.investments
     )
+    if result.assumptions.sbc.grow_share_count:
+        from src.dcf.bridge import base_share_count
+        from src.dcf.engine import closed_form_dilution_price
+
+        return closed_form_dilution_price(
+            equity,
+            base_share_count(result.financials),
+            result.projection.table.loc["sbc"].tolist(),
+            result.wacc.cost_of_equity,
+            result.assumptions.sbc.buyback_offset_pct,
+            result.assumptions.sbc.option_overhang_shares,
+        )
     return float(equity / shares)

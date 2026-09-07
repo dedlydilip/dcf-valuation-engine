@@ -7,6 +7,10 @@ down, rate-limiting, or has renamed half its rows.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from src.fetcher.yfinance_client import (
@@ -58,6 +62,20 @@ def snapshot_ticker(ticker: str, out_dir: Path | str = DEFAULT_OFFLINE_DIR) -> P
         out.index.name = "Date"
         out.to_csv(target / PRICES_FILE)
 
+    files = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in target.iterdir()
+        if p.name != "manifest.json" and p.is_file()
+    }
+    manifest = dict(
+        capture_timestamp=datetime.now(UTC).isoformat(),
+        provider="yfinance",
+        provider_version=importlib.metadata.version("yfinance"),
+        ticker=ticker,
+        sha256=files,
+        market_timestamp=raw.get("info", {}).get("regularMarketTime"),
+    )
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return target
 
 

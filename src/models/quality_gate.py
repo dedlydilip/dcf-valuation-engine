@@ -13,6 +13,7 @@ Two severities:
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass, field
 from typing import Any
@@ -44,6 +45,7 @@ UNSUITABLE_INDUSTRIES: tuple[str, ...] = (
     "capital markets",
     "asset management",
     "mortgage finance",
+    "credit services",
 )
 
 # Checked first, and exempt. All three are filed under "Financial Services" but are
@@ -52,7 +54,6 @@ UNSUITABLE_INDUSTRIES: tuple[str, ...] = (
 # "Insurance Brokers" (AJG) -- the last of which the "insurance" rule would
 # otherwise catch.
 SUITABLE_FINANCIAL_INDUSTRIES: tuple[str, ...] = (
-    "credit services",
     "financial data",
     "stock exchanges",
     "insurance brokers",
@@ -114,6 +115,21 @@ class DataQualityGate:
     def validate(self, raise_on_critical: bool = True) -> QualityReport:
         self.report = QualityReport()
 
+        source = self.financials
+        if isinstance(source, Financials):
+            values = source.statements.to_numpy(dtype=float)
+            import numpy as np
+
+            if np.isinf(values).any():
+                self.report.critical.append("CRITICAL: infinite financial input")
+            for key in ("marketCap", "sharesOutstanding", "currentPrice", "beta"):
+                val = source.info.get(key)
+                if val is not None and not math.isfinite(float(val)):
+                    self.report.critical.append(f"CRITICAL: non-finite {key}")
+            if not source.info.get("currency"):
+                self.report.warnings.append(
+                    "Quote currency is unknown; verify units before interpreting per-share value."
+                )
         for name in self.REQUIRED_FIELDS:
             if not self._present(name):
                 self.report.critical.append(f"CRITICAL: missing or entirely null field '{name}'")
@@ -138,8 +154,7 @@ class DataQualityGate:
         n_periods = self._period_count()
         if n_periods is not None and n_periods < self.min_history_years:
             self.report.critical.append(
-                f"CRITICAL: only {n_periods} usable fiscal period(s), "
-                f"need {self.min_history_years}"
+                f"CRITICAL: only {n_periods} usable fiscal period(s), need {self.min_history_years}"
             )
 
         self._check_currency_coherence()
@@ -192,7 +207,7 @@ class DataQualityGate:
         # Individually stale fields: present in history, missing in the newest period.
         stale = [
             name
-            for name in (*BALANCE_SHEET_FIELDS, "interest_expense", "sbc", "da", "capex")
+            for name in (*BALANCE_SHEET_FIELDS, "interest_expense", "sbc", "da", "capex", "ebit")
             if name in statements.index
             and pd.isna(statements.loc[name, latest])
             and statements.loc[name].notna().any()
@@ -260,6 +275,8 @@ class DataQualityGate:
 
         # Brokerage is a fee business: commission income, no underwriting balance
         # sheet. Checked before the "insurance" match, which would otherwise catch it.
+        if str(info.get("symbol") or getattr(self.financials, "ticker", "")).upper() in {"V", "MA"}:
+            return
         if any(allowed in industry for allowed in SUITABLE_FINANCIAL_INDUSTRIES):
             return
         for unsuitable in UNSUITABLE_INDUSTRIES:
@@ -322,8 +339,8 @@ class DataQualityGate:
                 )
         if pd.notna(sbc) and pd.notna(ebit) and ebit > 0 and sbc > ebit:
             self.report.warnings.append(
-                "Stock-based compensation exceeds EBIT: the company is not profitable once "
-                "employee equity is treated as a real cost."
+                "SBC is material relative to remaining profit; EBIT already includes SBC. Do not subtract it again. "
+                "Review compensation relative to revenue and margins."
             )
 
         if not self._present("sbc"):

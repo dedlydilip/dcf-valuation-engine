@@ -1,16 +1,8 @@
-"""Build the Excel model.
+"""Export live Excel formulas for the core valuation.
 
-Every computed cell is a real Excel formula, not a number Python worked out and
-pasted in. That distinction is the whole point: an analyst opening this file can
-change the risk-free rate, the EBIT margin, or the exit multiple and watch the
-valuation move, exactly as they would in a model built by hand. A workbook of
-hardcoded values looks identical until someone clicks a cell, and then it is
-obviously a report rather than a model.
-
-The SBC treatment is a live switch too. Type "dilute" in the SBC method cell on the
-Inputs sheet and the tax line, the free cash flow line and the share count all
-change together -- which makes the double-count the model refuses to commit visible
-rather than theoretical.
+Forecasts, cash taxes, discount rates, terminal selection and dilution follow
+the Python accounting policy. Supporting source observations and analytical
+reports are snapshots at generation and are explicitly labeled for rebuilding.
 """
 
 from __future__ import annotations
@@ -74,8 +66,19 @@ class SheetCursor:
         self.row += 1
 
     def note(self, text: str, warn: bool = False) -> None:
+        from openpyxl.styles import Alignment
+
         cell = self.ws.cell(row=self.row, column=1, value=text)
         cell.font = S.WARN_FONT if warn else S.NOTE_FONT
+        width = max(4, self.ws.max_column)
+        self.ws.merge_cells(start_row=self.row, start_column=1, end_row=self.row, end_column=width)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        chars = sum(
+            self.ws.column_dimensions[get_column_letter(i)].width or 13 for i in range(1, width + 1)
+        )
+        self.ws.row_dimensions[self.row].height = max(
+            28, min(400, math.ceil(len(text) / max(chars, 40)) * 15)
+        )
         self.row += 1
 
     def label_value(
@@ -162,6 +165,8 @@ class ExcelModelBuilder:
         self.football = football
         self.refs: dict[str, str] = {}
         self.years = len(result.pv_explicit)
+        currency = getattr(financials, "currency", "USD")
+        self.price_format = f'"{currency} "#,##0.00;("{currency} "#,##0.00)'
 
     def _base_shares(self) -> float:
         """Share count before any forecast issuance.
@@ -192,6 +197,13 @@ class ExcelModelBuilder:
         path.parent.mkdir(parents=True, exist_ok=True)
         book = self.workbook()
         book.save(path)
+        import json
+
+        from src.models.provenance import json_safe
+
+        path.with_suffix(".manifest.json").write_text(
+            json.dumps(json_safe(self.result.manifest), indent=2, allow_nan=False), encoding="utf-8"
+        )
         return path
 
     def workbook(self) -> Workbook:
@@ -216,6 +228,26 @@ class ExcelModelBuilder:
         self._historicals(book.create_sheet("Historicals"))
         self._summary(book.create_sheet("Summary", 0))
 
+        import json
+
+        from openpyxl.styles import Alignment
+
+        provenance = book.create_sheet("Provenance")
+        provenance.append(["Run manifest at generation; regenerate after changing inputs"])
+        for key, value in self.result.manifest.items():
+            provenance.append(
+                [
+                    key,
+                    json.dumps(value, sort_keys=True, default=str)
+                    if isinstance(value, (dict, list))
+                    else str(value),
+                ]
+            )
+        provenance.column_dimensions["A"].width = 28
+        provenance.column_dimensions["B"].width = 100
+        for row in provenance:
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
         assert_all_cells_finite(book)
         return book
 
@@ -231,7 +263,9 @@ class ExcelModelBuilder:
         info = getattr(self.financials, "info", None) or {}
 
         cur.title(f"{result.ticker} - Valuation Inputs", width=8)
-        cur.note("Blue cells are inputs and are safe to change. Every other sheet recalculates.")
+        cur.note(
+            f"Amounts in {getattr(self.financials, 'currency', 'USD')} millions; shares in millions; prices per share. Core valuation updates with blue inputs. Supporting snapshot reports require rebuilding."
+        )
         cur.skip()
 
         cur.section("Company", width=8)
@@ -243,10 +277,13 @@ class ExcelModelBuilder:
         # cannot tell whether a stale-looking price is an error or simply old. These
         # are two different dates and both matter -- when the model was run, and how
         # old the statements behind it are.
-        cur.label_value("Analysis date", datetime.now().strftime("%Y-%m-%d"))
-        cur.label_value("Financial data as of", _latest_period(self.financials))
+        cur.label_value("Workbook generated on", datetime.now().strftime("%Y-%m-%d"))
+        cur.label_value("Latest fiscal period end", _latest_period(self.financials))
         cur.label_value(
-            "Current share price", result.bridge.current_price or 0.0, S.PRICE, key="price"
+            "Snapshot share price",
+            result.bridge.current_price or 0.0,
+            self.price_format,
+            key="price",
         )
         cur.skip()
 
@@ -254,7 +291,9 @@ class ExcelModelBuilder:
         w = result.wacc
         cur.label_value("Risk-free rate", w.risk_free_rate, S.PERCENT_2, key="rf")
         cur.label_value("Equity risk premium", w.equity_risk_premium, S.PERCENT_2, key="erp")
-        cur.label_value("Beta", w.beta, S.RATIO, key="beta")
+        cur.label_value(
+            "Raw levered beta at current capital structure", w.raw_beta, S.RATIO, key="beta"
+        )
         cur.label_value("Size premium", w.size_premium, S.PERCENT_2, key="size_prem")
         cur.label_value("Country risk premium", w.country_risk_premium, S.PERCENT_2, key="crp")
         cur.label_value("Cost of debt (pre-tax)", w.cost_of_debt, S.PERCENT_2, key="kd")
@@ -316,8 +355,18 @@ class ExcelModelBuilder:
             start_col=3,
         )
         cur.series_row(
-            "EBIT margin (GAAP, SBC included)",
-            [""] + [float(v) for v in table.loc["ebit_margin"]],
+            "EBIT margin (basis specified below)",
+            [""]
+            + [
+                float(e / r)
+                for e, r in zip(
+                    table.loc["ebit_pre_sbc"]
+                    if assumptions.projection.margin_basis == "before_sbc"
+                    else table.loc["ebit"],
+                    table.loc["revenue"],
+                    strict=True,
+                )
+            ],
             S.PERCENT,
             key="margin",
             kind="input",
@@ -325,7 +374,11 @@ class ExcelModelBuilder:
         )
         cur.series_row(
             "D&A % of revenue",
-            [""] + [float(v) / float(r) for v, r in zip(table.loc["da"], table.loc["revenue"], strict=True)],
+            [""]
+            + [
+                float(v) / float(r)
+                for v, r in zip(table.loc["da"], table.loc["revenue"], strict=True)
+            ],
             S.PERCENT,
             key="da_pct",
             kind="input",
@@ -333,7 +386,11 @@ class ExcelModelBuilder:
         )
         cur.series_row(
             "Capex % of revenue",
-            [""] + [float(v) / float(r) for v, r in zip(table.loc["capex"], table.loc["revenue"], strict=True)],
+            [""]
+            + [
+                float(v) / float(r)
+                for v, r in zip(table.loc["capex"], table.loc["revenue"], strict=True)
+            ],
             S.PERCENT,
             key="capex_pct",
             kind="input",
@@ -341,8 +398,11 @@ class ExcelModelBuilder:
         )
         cur.series_row(
             "Net working capital % of revenue",
-            [proj.drivers["nwc_pct_revenue"]]
-            + [float(v) / float(r) for v, r in zip(table.loc["nwc"], table.loc["revenue"], strict=True)],
+            [proj.drivers["base_nwc"] / base_revenue]
+            + [
+                float(v) / float(r)
+                for v, r in zip(table.loc["nwc"], table.loc["revenue"], strict=True)
+            ],
             S.PERCENT,
             key="nwc_pct",
             kind="input",
@@ -350,7 +410,11 @@ class ExcelModelBuilder:
         )
         cur.series_row(
             "SBC % of revenue",
-            [""] + [float(v) / float(r) for v, r in zip(table.loc["sbc"], table.loc["revenue"], strict=True)],
+            [""]
+            + [
+                float(v) / float(r)
+                for v, r in zip(table.loc["sbc"], table.loc["revenue"], strict=True)
+            ],
             S.PERCENT,
             key="sbc_pct",
             kind="input",
@@ -363,21 +427,19 @@ class ExcelModelBuilder:
         term = assumptions.terminal
         cur.label_value("Perpetuity growth rate", term.perpetuity_growth, S.PERCENT_2, key="g")
         exit_result = result.terminal_all.get("exit_multiple")
-        multiple = (
-            exit_result.multiple_used
-            if exit_result and exit_result.multiple_used
-            else term.static_exit_multiple
+        cur.label_value(
+            "Static exit multiple assumption",
+            term.static_exit_multiple,
+            S.MULTIPLE,
+            key="static_mult",
         )
-        cur.label_value("Exit multiple (EV/EBITDA)", multiple, S.MULTIPLE, key="exit_mult")
         cur.label_value(
             "Mature industry floor", term.mature_industry_multiple, S.MULTIPLE, key="floor_mult"
         )
         cur.label_value(
             "Decay (turns per pp of growth lost)", term.decay_turns_per_pp, S.RATIO, key="decay"
         )
-        cur.label_value(
-            "Terminal method preference", term.method, key="tv_pref"
-        )
+        cur.label_value("Terminal method preference", term.method, key="tv_pref")
         cur.label_value(
             "Mid-year convention (1 = yes)",
             1 if assumptions.projection.mid_year_convention else 0,
@@ -387,453 +449,452 @@ class ExcelModelBuilder:
         cur.skip()
 
         cur.section("Bridge items", width=8)
-        cur.label_value("Minority interest", result.bridge.minority_interest, S.MONEY_MM, key="minority")
-        cur.label_value("Preferred equity", result.bridge.preferred_equity, S.MONEY_MM, key="preferred")
-        cur.label_value("Non-operating investments", result.bridge.investments, S.MONEY_MM, key="invest")
+        cur.label_value(
+            "Minority interest", result.bridge.minority_interest, S.MONEY_MM, key="minority"
+        )
+        cur.label_value(
+            "Preferred equity", result.bridge.preferred_equity, S.MONEY_MM, key="preferred"
+        )
+        cur.label_value(
+            "Non-operating investments", result.bridge.investments, S.MONEY_MM, key="invest"
+        )
 
+        cur.skip()
+        cur.section("Calculation policies", width=8)
+        cur.label_value("Terminal FCF mode", term.terminal_fcf_mode, key="tv_mode")
+        cur.label_value("RONIC (0 = WACC)", term.ronic or 0, S.PERCENT_2, key="ronic")
+        cur.label_value(
+            "Buyback offset fraction", assumptions.sbc.buyback_offset_pct, S.PERCENT, key="buyback"
+        )
+        cur.label_value(
+            "Floor cost of equity at risk-free (1=yes)",
+            int(assumptions.wacc.floor_cost_of_equity),
+            key="coe_floor",
+        )
+        cur.label_value(
+            "Direct WACC override (0 = calculate)",
+            assumptions.wacc.discount_rate_override or 0,
+            S.PERCENT_2,
+            key="wacc_override",
+        )
+        cur.label_value(
+            "Opening tax loss carryforward",
+            assumptions.projection.starting_nol,
+            S.MONEY_MM,
+            key="nol",
+        )
+        cur.label_value(
+            "Operating margin basis", assumptions.projection.margin_basis, key="margin_basis"
+        )
+        cur.label_value(
+            "Historical opening operating NWC",
+            f"={self.refs['base_revenue']}*{self.refs['nwc_pct']}",
+            S.MONEY_MM,
+            key="base_nwc",
+            kind="formula",
+        )
+        r = self.refs
+        detail = exit_result.decay_detail if exit_result else {}
+        cur.label_value("Exit multiple mode", term.exit_multiple_mode, key="exit_mode")
+        cur.label_value(
+            "Peer anchor supported (1=yes)",
+            int(detail.get("anchor_is_peer_median", 0)),
+            key="peer_supported",
+        )
+        cur.label_value(
+            "Screened peer EV/EBITDA anchor",
+            detail.get("peer_median_multiple", term.static_exit_multiple),
+            S.MULTIPLE,
+            key="peer_mult",
+        )
+        cur.label_value(
+            "Screened peer revenue growth",
+            detail.get("peer_median_growth", 0),
+            S.PERCENT_2,
+            key="peer_growth",
+        )
+        last_growth = _cell(r["growth"], self.years)
+        anchor = f"IF({r['peer_supported']}=1,{r['peer_mult']},{r['static_mult']})"
+        peer_growth = f"IF({r['peer_supported']}=1,{r['peer_growth']},{last_growth})"
+        multiple_formula = f'=IF({r["exit_mode"]}="static",{r["static_mult"]},MIN(MAX({anchor}-{r["decay"]}*MAX(0,({peer_growth}-{last_growth})*100),MIN({r["floor_mult"]},{anchor})),{anchor}))'
+        cur.label_value(
+            "Exit multiple used (EV/EBITDA)",
+            multiple_formula,
+            S.MULTIPLE,
+            key="exit_mult",
+            kind="formula",
+        )
+        cur.note(
+            "Peer observations are fixed at generation. Changing growth, decay, floor or mode updates the resolved multiple; refresh source data by rebuilding."
+        )
+        cur.note(
+            "NOL schedule assumes unrestricted carryforward without expiry or utilization caps. Cash repurchases receive no tax deduction."
+        )
+        checks = [
+            f"{r['base_revenue']}>0",
+            f"{r['shares_in']}>0",
+            f"{r['overhang']}>=0",
+            f'OR({r["sbc_method"]}="expense",{r["sbc_method"]}="dilute")',
+            f'OR({r["margin_basis"]}="after_sbc",{r["margin_basis"]}="before_sbc")',
+            f'OR({r["cap_structure"]}="current",{r["cap_structure"]}="target")',
+            f'OR({r["tv_mode"]}="fcf5",{r["tv_mode"]}="value_driver")',
+            f'OR({r["tv_pref"]}="gordon",{r["tv_pref"]}="both",{r["tv_pref"]}="value_driver",{r["tv_pref"]}="exit_multiple")',
+            f'OR({r["exit_mode"]}="static",{r["exit_mode"]}="dynamic")',
+        ]
+        for key, lo, hi in [
+            ("buyback", 0, 1),
+            ("tax", 0, 1),
+            ("rf", 0, 0.25),
+            ("erp", 0, 0.2),
+            ("beta", -5, 10),
+            ("target_wd", 0, 0.95),
+            ("g", -0.02, 0.06),
+            ("ronic", 0, 2),
+            ("static_mult", 0, 100),
+            ("floor_mult", 0, 50),
+            ("decay", 0, 20),
+            ("wacc_override", 0, 1),
+            ("kd", 0, 0.5),
+            ("size_prem", 0, 0.1),
+            ("crp", 0, 0.2),
+            ("nol", 0, 1e300),
+            ("debt", 0, 1e300),
+            ("cash", 0, 1e300),
+        ]:
+            lower = ">" if key in ("erp", "static_mult", "floor_mult") else ">="
+            upper = "<" if key == "tax" else "<="
+            checks.extend([f"{r[key]}{lower}{lo}", f"{r[key]}{upper}{hi}"])
+        for key, lo, hi in [
+            ("growth", -1, 10),
+            ("margin", -5, 1),
+            ("da_pct", 0, 5),
+            ("capex_pct", 0, 5),
+            ("nwc_pct", -5, 5),
+            ("sbc_pct", 0, 1e300),
+        ]:
+            cells = f"{_cell(r[key], 1)}:{_cell(r[key], self.years).split('!')[1]}"
+            lower = ">" if key == "growth" else ">="
+            checks.extend(
+                [f"COUNT({cells})={self.years}", f"MIN({cells}){lower}{lo}", f"MAX({cells})<={hi}"]
+            )
+        cur.label_value(
+            "Input policy valid (FALSE blocks valuation)",
+            "=AND(" + ",".join(checks) + ")",
+            key="inputs_valid",
+            kind="formula",
+        )
         ws.freeze_panes = "A3"
 
     # --------------------------------------------------------------------- wacc
 
     def _wacc(self, ws: Worksheet) -> None:
-        S.col_width(ws, {"A": 42, "B": 16})
+        S.col_width(ws, {"A": 46, "B": 20})
         cur = SheetCursor(ws, self.refs)
         r = self.refs
-
         cur.title("Weighted Average Cost of Capital", width=4)
-        cur.note("Every figure on this sheet is a formula driven from Inputs. That is true here; it is not true of Summary, Comps or Historicals.")
-        cur.skip()
-
-        cur.section("Cost of equity (CAPM)", width=4)
+        cur.note(
+            "Beta adjusts with target leverage. Debt cost is an analyst input; historical book yield is a proxy, not a current market yield."
+        )
         cur.label_value("Risk-free rate", f"={r['rf']}", S.PERCENT_2, kind="link")
-        cur.label_value("Beta", f"={r['beta']}", S.RATIO, kind="link")
-        cur.label_value("Equity risk premium", f"={r['erp']}", S.PERCENT_2, kind="link")
-        cur.label_value("Size premium", f"={r['size_prem']}", S.PERCENT_2, kind="link")
-        cur.label_value("Country risk premium", f"={r['crp']}", S.PERCENT_2, kind="link")
+        beta = cur.label_value(
+            "Beta",
+            f'=IF({r["cap_structure"]}="target",{r["beta"]}/(1+(1-{r["tax"]})*{r["debt"]}/{r["mcap"]})*(1+(1-{r["tax"]})*{r["target_wd"]}/(1-{r["target_wd"]})),{r["beta"]})',
+            S.RATIO,
+            key="levered_beta",
+        )
+        raw = f"{r['rf']}+{beta}*{r['erp']}+{r['size_prem']}+{r['crp']}"
         cur.label_value(
             "Cost of equity",
-            f"={r['rf']}+{r['beta']}*{r['erp']}+{r['size_prem']}+{r['crp']}",
+            f"=IF({r['coe_floor']}=1,MAX({r['rf']},{raw}),{raw})",
             S.PERCENT_2,
             key="coe",
-            kind="total",
         )
-        cur.note("No floor is applied: a negative beta legitimately gives a cost of equity below rf.")
-        cur.skip()
-
-        cur.section("Cost of debt", width=4)
         cur.label_value("Pre-tax cost of debt", f"={r['kd']}", S.PERCENT_2, kind="link")
-        cur.label_value("Tax rate", f"={r['tax']}", S.PERCENT, kind="link")
         cur.label_value(
-            "After-tax cost of debt",
-            f"={r['kd']}*(1-{r['tax']})",
-            S.PERCENT_2,
-            key="atkd",
-            kind="total",
+            "After-tax cost of debt", f"={r['kd']}*(1-{r['tax']})", S.PERCENT_2, key="atkd"
         )
-        cur.skip()
-
-        cur.section("Capital structure", width=4)
-        cur.label_value("Market capitalisation", f"={r['mcap']}", S.MONEY_MM, kind="link")
-        cur.label_value("Total debt", f"={r['debt']}", S.MONEY_MM, kind="link")
-        cur.label_value(
-            "Total capital", f"={r['mcap']}+{r['debt']}", S.MONEY_MM, key="totcap", kind="formula"
-        )
-        # Mirrors WACCCalculator.debt_weight / equity_weight exactly, including the
-        # target-structure branch. Hardcoding market weights here made the workbook
-        # disagree with the Python valuation printed beside it by up to 17% whenever
-        # capital_structure was set to "target".
+        cur.label_value("Total capital", f"={r['mcap']}+{r['debt']}", S.MONEY_MM, key="totcap")
         cur.label_value(
             "Debt weight",
-            f'=IF({r["cap_structure"]}="target",{r["target_wd"]},'
-            f"IF({r['totcap']}=0,0,{r['debt']}/{r['totcap']}))",
+            f'=IF({r["cap_structure"]}="target",{r["target_wd"]},IF({r["totcap"]}>0,{r["debt"]}/{r["totcap"]},0))',
             S.PERCENT,
             key="wd",
         )
         cur.label_value("Equity weight", f"=1-{r['wd']}", S.PERCENT, key="we")
-        cur.note(
-            'Type "target" in the capital-structure cell on Inputs to weight the WACC on '
-            "the target debt ratio instead of today's market weights."
-        )
-        cur.skip()
-
         cur.label_value(
             "WACC",
-            f"={r['we']}*{r['coe']}+{r['wd']}*{r['atkd']}",
+            f"=IF({r['wacc_override']}>0,{r['wacc_override']},{r['we']}*{r['coe']}+{r['wd']}*{r['atkd']})",
             S.PERCENT_2,
             key="wacc",
             kind="total",
         )
-        ws.cell(row=cur.row - 1, column=2).border = S.TOTAL_BORDER
-
-    # ---------------------------------------------------------------------- dcf
 
     def _dcf(self, ws: Worksheet) -> None:
         S.col_width(
-            ws, {"A": 44, "B": 18, "C": 15, "D": 15, "E": 15, "F": 15, "G": 15, "H": 15, "I": 15}
+            ws,
+            {
+                "A": 48,
+                "B": 20,
+                "C": 16,
+                **{get_column_letter(i): 16 for i in range(4, 4 + self.years)},
+            },
         )
         cur = SheetCursor(ws, self.refs)
         r = self.refs
-        n = self.years
-        base_col = 3
         first = FIRST_FORECAST_COL
-        last = first + n - 1
-        letters = [get_column_letter(c) for c in range(first, last + 1)]
-        base_letter = get_column_letter(base_col)
-
+        last = first + self.years - 1
+        letters = [get_column_letter(i) for i in range(first, last + 1)]
         cur.title(f"{self.result.ticker} - Discounted Cash Flow", width=last)
-        cur.note("Black cells are formulas. Change any blue input and this sheet recalculates.")
-        cur.skip()
-
-        cur.headers(["Base"] + [f"Year {i}" for i in range(1, n + 1)], start_col=base_col)
-        header_row = cur.row - 1
-
-        # -- operating build ---------------------------------------------------
-        cur.section("Unlevered free cash flow", width=last)
-
-        rev_row = cur.row
-        ws.cell(row=rev_row, column=1, value="Revenue").font = S.LABEL_FONT
-        c = ws.cell(row=rev_row, column=base_col, value=f"={r['base_revenue']}")
-        c.font, c.number_format = S.LINK_FONT, S.MONEY_MM
-        for i in range(len(letters)):
-            prev = base_letter if i == 0 else letters[i - 1]
-            g = _cell(r["growth"], offset=i + 1)
-            c = ws.cell(row=rev_row, column=first + i, value=f"={prev}{rev_row}*(1+{g})")
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-
-        ebit_row = self._driver_row(
-            ws, cur, "EBIT (GAAP, after SBC)", rev_row, r["margin"], letters, first, S.MONEY_MM
-        )
-        sbc_row = self._driver_row(
-            ws, cur, "Stock-based compensation", rev_row, r["sbc_pct"], letters, first, S.MONEY_MM
-        )
-
-        presbc_row = cur.row
-        ws.cell(row=presbc_row, column=1, value="EBIT before SBC").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(
-                row=presbc_row, column=first + i, value=f"={letter}{ebit_row}+{letter}{sbc_row}"
-            )
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-
-        taxable_row = cur.row
-        ws.cell(row=taxable_row, column=1, value="Taxable EBIT (per SBC method)").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            formula = (
-                f'=IF({r["sbc_method"]}="dilute",{letter}{presbc_row},{letter}{ebit_row})'
-            )
-            c = ws.cell(row=taxable_row, column=first + i, value=formula)
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
         cur.note(
-            'Type "dilute" in the SBC method cell on Inputs and this line, the cash flow '
-            "and the share count all switch together."
+            "Annual snapshot model. Blue cells are editable. Summary diagnostics are saved-at-build and require regeneration after edits."
         )
+        cur.headers(["Base"] + [f"Year {i}" for i in range(1, self.years + 1)], start_col=3)
 
-        tax_row = cur.row
-        ws.cell(row=tax_row, column=1, value="(-) Taxes").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(
-                row=tax_row, column=first + i, value=f"=-MAX({letter}{taxable_row},0)*{r['tax']}"
-            )
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
+        def series(label, formulas, base=None):
+            row = cur.row
+            ws.cell(row, 1, label).font = S.LABEL_FONT
+            if base is not None:
+                ws.cell(row, 3, base).number_format = S.MONEY_MM
+            for col, formula in zip(range(first, last + 1), formulas, strict=True):
+                c = ws.cell(row, col, formula)
+                c.font = S.FORMULA_FONT
+                c.number_format = S.MONEY_MM
+            cur.row += 1
+            return row
 
-        nopat_row = cur.row
-        ws.cell(row=nopat_row, column=1, value="NOPAT").font = S.TOTAL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(row=nopat_row, column=first + i, value=f"={letter}{taxable_row}+{letter}{tax_row}")
-            c.font, c.number_format, c.border = S.TOTAL_FONT, S.MONEY_MM, S.TOP_BORDER
-        cur.row += 1
-
-        da_row = self._driver_row(
-            ws, cur, "(+) Depreciation & amortisation", rev_row, r["da_pct"], letters, first, S.MONEY_MM
+        rev = cur.row
+        series(
+            "Revenue",
+            [
+                f"={('C' if i == 0 else letters[i - 1])}{rev}*(1+{_cell(r['growth'], i + 1)})"
+                for i in range(self.years)
+            ],
+            f"={r['base_revenue']}",
         )
-        capex_row = self._driver_row(
-            ws, cur, "(-) Capital expenditure", rev_row, r["capex_pct"], letters, first,
-            S.MONEY_MM, negate=True,
+        sbc = series(
+            "Stock-based compensation",
+            [f"={letter}{rev}*{_cell(r['sbc_pct'], i + 1)}" for i, letter in enumerate(letters)],
         )
-
-        nwc_row = cur.row
-        ws.cell(row=nwc_row, column=1, value="Net working capital").font = S.LABEL_FONT
-        c = ws.cell(
-            row=nwc_row,
-            column=base_col,
-            value=f"={base_letter}{rev_row}*{_cell(r['nwc_pct'], offset=0)}",
+        ebit = series(
+            "EBIT (GAAP, after SBC)",
+            [
+                f'={letter}{rev}*{_cell(r["margin"], i + 1)}-IF({r["margin_basis"]}="before_sbc",{letter}{sbc},0)'
+                for i, letter in enumerate(letters)
+            ],
         )
-        c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        for i, letter in enumerate(letters):
-            c = ws.cell(
-                row=nwc_row,
-                column=first + i,
-                value=f"={letter}{rev_row}*{_cell(r['nwc_pct'], offset=i + 1)}",
-            )
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-
-        dnwc_row = cur.row
-        ws.cell(row=dnwc_row, column=1, value="(-) Increase in working capital").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            prev = base_letter if i == 0 else letters[i - 1]
-            c = ws.cell(row=dnwc_row, column=first + i, value=f"=-({letter}{nwc_row}-{prev}{nwc_row})")
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-
-        core_row = cur.row
-        ws.cell(row=core_row, column=1, value="Unlevered FCF (per SBC method)").font = S.TOTAL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(
-                row=core_row,
-                column=first + i,
-                value=f"={letter}{nopat_row}+{letter}{da_row}+{letter}{capex_row}+{letter}{dnwc_row}",
-            )
-            c.font, c.number_format, c.border = S.TOTAL_FONT, S.MONEY_MM, S.TOP_BORDER
-        cur.row += 1
-
-        adj_row = cur.row
-        ws.cell(row=adj_row, column=1, value="Memo: adjusted FCF (SBC expensed)").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            formula = (
-                f'=IF({r["sbc_method"]}="dilute",'
-                f"{letter}{core_row}-{letter}{sbc_row}*(1-{r['tax']}),{letter}{core_row})"
-            )
-            c = ws.cell(row=adj_row, column=first + i, value=formula)
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-
-        neutral_row = cur.row
-        ws.cell(row=neutral_row, column=1, value="Memo: SBC-neutral FCF (SBC added back)").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(
-                row=neutral_row,
-                column=first + i,
-                value=f"={letter}{adj_row}+{letter}{sbc_row}*(1-{r['tax']})",
-            )
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-        cur.note(
-            "Reported FCF (CFO less capex) adds SBC back and stops there. It is shown on the "
-            "Summary sheet for contrast and is never discounted."
+        series("EBIT before SBC", [f"={letter}{ebit}+{letter}{sbc}" for letter in letters])
+        taxable = series(
+            "Taxable EBIT (SBC remains deductible)", [f"={letter}{ebit}" for letter in letters]
         )
-        cur.skip()
-
-        # -- discounting -------------------------------------------------------
-        cur.section("Discounting", width=last)
-        idx_row = cur.row
-        ws.cell(row=idx_row, column=1, value="Year index").font = S.LABEL_FONT
-        for i in range(len(letters)):
-            prev = letters[i - 1] if i else None
-            value = "=1" if i == 0 else f"={prev}{idx_row}+1"
-            c = ws.cell(row=idx_row, column=first + i, value=value)
-            c.font, c.number_format = S.FORMULA_FONT, S.INTEGER
-        cur.row += 1
-
-        exp_row = cur.row
-        ws.cell(row=exp_row, column=1, value="Discount period (years)").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(
-                row=exp_row,
-                column=first + i,
-                value=f"={letter}{idx_row}-IF({r['midyear']}=1,0.5,0)",
-            )
-            c.font, c.number_format = S.FORMULA_FONT, S.RATIO
-        cur.row += 1
-
-        df_row = cur.row
-        ws.cell(row=df_row, column=1, value="Discount factor").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(row=df_row, column=first + i, value=f"=1/(1+{r['wacc']})^{letter}{exp_row}")
-            c.font, c.number_format = S.FORMULA_FONT, S.RATIO
-        cur.row += 1
-
-        pv_row = cur.row
-        ws.cell(row=pv_row, column=1, value="PV of unlevered FCF").font = S.LABEL_FONT
-        for i, letter in enumerate(letters):
-            c = ws.cell(row=pv_row, column=first + i, value=f"={letter}{core_row}*{letter}{df_row}")
-            c.font, c.number_format = S.FORMULA_FONT, S.MONEY_MM
-        cur.row += 1
-
-        sum_pv = cur.label_value(
+        nol_open = cur.row
+        nol_use = nol_open + 1
+        nol_end = nol_open + 2
+        series(
+            "Opening tax loss carryforward",
+            [
+                f"={r['nol']}" if i == 0 else f"={letters[i - 1]}{nol_end}"
+                for i in range(self.years)
+            ],
+        )
+        series(
+            "Tax loss used",
+            [f"=MIN({letter}{nol_open},MAX({letter}{taxable},0))" for letter in letters],
+        )
+        series(
+            "Closing tax loss carryforward",
+            [
+                f"={letter}{nol_open}-{letter}{nol_use}+MAX(-{letter}{taxable},0)"
+                for letter in letters
+            ],
+        )
+        tax = series(
+            "(-) Taxes",
+            [f"=-(MAX({letter}{taxable},0)-{letter}{nol_use})*{r['tax']}" for letter in letters],
+        )
+        nopat = series("NOPAT", [f"={letter}{ebit}+{letter}{tax}" for letter in letters])
+        da = series(
+            "(+) Depreciation & amortisation",
+            [f"={letter}{rev}*{_cell(r['da_pct'], i + 1)}" for i, letter in enumerate(letters)],
+        )
+        capex = series(
+            "(-) Capital expenditure",
+            [f"=-{letter}{rev}*{_cell(r['capex_pct'], i + 1)}" for i, letter in enumerate(letters)],
+        )
+        nwc = series(
+            "Net working capital",
+            [f"={letter}{rev}*{_cell(r['nwc_pct'], i + 1)}" for i, letter in enumerate(letters)],
+            f"={r['base_nwc']}",
+        )
+        dnwc = series(
+            "(-) Increase in working capital",
+            [
+                f"=-({letter}{nwc}-{('C' if i == 0 else letters[i - 1])}{nwc})"
+                for i, letter in enumerate(letters)
+            ],
+        )
+        adj = series(
+            "Memo: adjusted FCF (SBC expensed)",
+            [f"={letter}{nopat}+{letter}{da}+{letter}{capex}+{letter}{dnwc}" for letter in letters],
+        )
+        neutral = series(
+            "Memo: SBC-neutral FCF (SBC added back)",
+            [
+                f'={letter}{adj}+{letter}{sbc}*(1-IF({r["sbc_method"]}="dilute",{r["buyback"]},0))'
+                for letter in letters
+            ],
+        )
+        core = series(
+            "Unlevered FCF (per SBC method)",
+            [
+                f'=IF({r["sbc_method"]}="dilute",{letter}{neutral},{letter}{adj})'
+                for letter in letters
+            ],
+        )
+        idx = series("Year index", [f"={i + 1}" for i in range(self.years)])
+        exp = series(
+            "Discount period (years)",
+            [f"={letter}{idx}-IF({r['midyear']}=1,0.5,0)" for letter in letters],
+        )
+        df = series("Discount factor", [f"=1/(1+{r['wacc']})^{letter}{exp}" for letter in letters])
+        for row, number_format in [(idx, S.INTEGER), (exp, S.RATIO), (df, S.RATIO)]:
+            for column in range(first, last + 1):
+                ws.cell(row, column).number_format = number_format
+        pv = series("PV of unlevered FCF", [f"={letter}{core}*{letter}{df}" for letter in letters])
+        cur.label_value(
             "Sum of PV, explicit period",
-            f"=SUM({get_column_letter(first)}{pv_row}:{get_column_letter(last)}{pv_row})",
+            f"=SUM({letters[0]}{pv}:{letters[-1]}{pv})",
             S.MONEY_MM,
             key="sum_pv",
-            kind="total",
         )
-        cur.skip()
-
-        # -- terminal value ----------------------------------------------------
         cur.section("Terminal value", width=last)
-        last_letter = letters[-1]
-        ebitda_ref = cur.label_value(
-            "Terminal year EBITDA",
-            f"={last_letter}{ebit_row}+{last_letter}{da_row}",
-            S.MONEY_MM,
-            key="term_ebitda",
+        letter = letters[-1]
+        cur.label_value(
+            "Terminal year EBITDA", f"={letter}{ebit}+{letter}{da}", S.MONEY_MM, key="term_ebitda"
         )
-        term_fcf = cur.label_value(
+        cur.label_value(
+            "Terminal NOPAT (SBC expensed, no perpetual NOL)",
+            f"={letter}{ebit}-MAX({letter}{ebit},0)*{r['tax']}",
+            S.MONEY_MM,
+            key="term_nopat",
+        )
+        cur.label_value(
             "Terminal year FCF (SBC expensed)",
-            f"={last_letter}{adj_row}",
+            f"={r['term_nopat']}+{letter}{da}+{letter}{capex}+{letter}{dnwc}",
             S.MONEY_MM,
             key="term_fcf",
         )
-        cur.note(
-            "The terminal value always uses the SBC-expensed cash flow. Capitalising an "
-            "added-back SBC into perpetuity while charging only five years of dilution "
-            "against it would inflate the answer by an accounting choice."
+        cur.label_value(
+            "Terminal value - FCF5 Gordon",
+            f"=IF({r['wacc']}<={r['g']},NA(),{r['term_fcf']}*(1+{r['g']})/({r['wacc']}-{r['g']}))",
+            S.MONEY_MM,
+            key="tv_fcf5",
         )
-        gordon = cur.label_value(
+        cur.label_value(
+            "Terminal value - value driver",
+            f"=IF(OR({r['wacc']}<={r['g']},{r['term_nopat']}<=0),NA(),{r['term_nopat']}*(1+{r['g']})*(1-{r['g']}/IF({r['ronic']}>0,{r['ronic']},{r['wacc']}))/({r['wacc']}-{r['g']}))",
+            S.MONEY_MM,
+            key="tv_vd",
+        )
+        cur.label_value(
             "Terminal value - perpetuity growth",
-            f"=IF({r['wacc']}<={r['g']},NA(),{term_fcf}*(1+{r['g']})/({r['wacc']}-{r['g']}))",
+            f'=IF(AND({r["tv_mode"]}="value_driver",IFERROR({r["tv_vd"]}>0,FALSE)),{r["tv_vd"]},{r["tv_fcf5"]})',
             S.MONEY_MM,
             key="tv_gordon",
         )
-        exit_tv = cur.label_value(
+        cur.label_value(
             "Terminal value - exit multiple",
-            f"={ebitda_ref}*{r['exit_mult']}",
+            f"=IF({r['term_ebitda']}<=0,NA(),{r['term_ebitda']}*{r['exit_mult']})",
             S.MONEY_MM,
             key="tv_exit",
         )
+
+        def positive(key):
+            return f"IFERROR({r[key]}>0,FALSE)"
+
+        # Same positive-value preference, then finite Gordon distress diagnostic.
+        normal = f'IF({positive("tv_gordon")},"gordon",IF({positive("tv_exit")},"exit_multiple",IF({positive("tv_vd")},"value_driver","gordon")))'
+        exit_first = f'IF({positive("tv_exit")},"exit_multiple",{normal})'
+        vd_first = f'IF({positive("tv_vd")},"value_driver",{normal})'
+        cur.label_value(
+            "Terminal method actually used",
+            f'=IF({r["tv_pref"]}="value_driver",{vd_first},IF({r["tv_pref"]}="exit_multiple",{exit_first},{normal}))',
+            key="tv_actual",
+        )
+        cur.label_value(
+            "Terminal value used",
+            f'=IF({r["tv_actual"]}="value_driver",{r["tv_vd"]},IF({r["tv_actual"]}="exit_multiple",{r["tv_exit"]},{r["tv_gordon"]}))',
+            S.MONEY_MM,
+            key="tv_used",
+        )
+        cur.label_value(
+            "PV of terminal value",
+            f'={r["tv_used"]}/(1+{r["wacc"]})^IF({r["tv_actual"]}="exit_multiple",{letter}{idx},{letter}{exp})',
+            S.MONEY_MM,
+            key="pv_tv",
+        )
         cur.label_value(
             "Implied exit multiple from perpetuity method",
-            f"=IF({ebitda_ref}<=0,NA(),{gordon}/{ebitda_ref})",
+            f"=IF({r['term_ebitda']}<=0,NA(),{r['tv_gordon']}/{r['term_ebitda']})",
             S.MULTIPLE,
             key="implied_mult",
         )
         cur.label_value(
             "Implied perpetuity growth from exit multiple",
-            f"=IF(({exit_tv}+{term_fcf})=0,NA(),"
-            f"({exit_tv}*{r['wacc']}-{term_fcf})/({exit_tv}+{term_fcf}))",
+            f"=IFERROR(({r['tv_exit']}*{r['wacc']}-{r['term_fcf']})/({r['tv_exit']}+{r['term_fcf']}),NA())",
             S.PERCENT_2,
             key="implied_g",
         )
-        cur.note(
-            "The cross-check that catches a multiple applied without thinking: every exit "
-            "multiple asserts a perpetuity growth rate, and it has to be believable."
-        )
-        # Mirror the engine's fallback, not just the configured preference.
-        #
-        # `TerminalValue.select` walks its preference order and skips any method whose
-        # value is not positive. The workbook branched on the configured method alone,
-        # so when Gordon went negative -- Tesla, once EBIT is taken from operating
-        # income and year-5 free cash flow turns negative -- Python fell back to the
-        # exit multiple and reported $36.09 while the workbook carried the negative
-        # Gordon figure and reported $7.19. An 80% disagreement between the two halves
-        # of the same model.
-        selected = cur.label_value(
-            "Terminal value used",
-            f'=IF({r["tv_pref"]}="exit_multiple",{exit_tv},'
-            f"IF({gordon}>0,{gordon},{exit_tv}))",
-            S.MONEY_MM,
-            key="tv_used",
-            kind="total",
-        )
-        # The discount period depends on what the terminal value IS. Gordon is a
-        # perpetuity of flows and inherits the mid-year convention; an exit multiple is
-        # a sale price at the end of year N and discounts at the full N.
-        # The discount period follows whichever method actually carried the value, so
-        # the fallback has to be reflected here too: a Gordon figure that lost out to
-        # the exit multiple must not keep Gordon's mid-year discounting.
-        using_exit = f'OR({r["tv_pref"]}="exit_multiple",{gordon}<=0)'
-        pv_tv = cur.label_value(
-            "PV of terminal value",
-            f"=IF({using_exit},"
-            f"{selected}/(1+{r['wacc']})^{last_letter}{idx_row},"
-            f"{selected}/(1+{r['wacc']})^{last_letter}{exp_row})",
-            S.MONEY_MM,
-            key="pv_tv",
-            kind="total",
-        )
-        cur.note(
-            "An exit multiple is a sale price at a point in time, so it discounts at the "
-            "full year count. Applying the mid-year factor to it overstates the terminal "
-            "value by about 4.9% at a 10% discount rate."
-        )
-        cur.skip()
-
-        # -- bridge ------------------------------------------------------------
         cur.section("Enterprise value to equity value", width=last)
-        ev = cur.label_value(
-            "Enterprise value", f"={sum_pv}+{pv_tv}", S.MONEY_MM, key="ev", kind="total"
-        )
+        cur.label_value("Enterprise value", f"={r['sum_pv']}+{r['pv_tv']}", S.MONEY_MM, key="ev")
         cur.label_value(
-            "Terminal value as % of EV", f"={pv_tv}/{ev}", S.PERCENT, key="tv_pct"
-        )
-        cur.label_value("(-) Total debt", f"=-{r['debt']}", S.MONEY_MM, kind="link")
-        cur.label_value("(+) Cash and short-term investments", f"={r['cash']}", S.MONEY_MM, kind="link")
-        cur.label_value("(-) Minority interest", f"=-{r['minority']}", S.MONEY_MM, kind="link")
-        cur.label_value("(-) Preferred equity", f"=-{r['preferred']}", S.MONEY_MM, kind="link")
-        cur.label_value("(+) Non-operating investments", f"={r['invest']}", S.MONEY_MM, kind="link")
-        equity = cur.label_value(
-            "Equity value",
-            f"={ev}-{r['debt']}+{r['cash']}-{r['minority']}-{r['preferred']}+{r['invest']}",
-            S.MONEY_MM,
-            key="equity",
-            kind="total",
-        )
-        ws.cell(row=cur.row - 1, column=2).border = S.TOP_BORDER
-
-        sbc_pv = cur.label_value(
-            "Memo: PV of future SBC (at cost of equity)",
-            f"=SUMPRODUCT({get_column_letter(first)}{sbc_row}:{get_column_letter(last)}{sbc_row},"
-            f"1/((1+{r['coe']})^{get_column_letter(first)}{idx_row}:{get_column_letter(last)}{idx_row}))",
-            S.MONEY_MM,
-            key="sbc_pv",
-        )
-        # The overhang is added under BOTH branches. Options already granted vest
-        # whatever the model assumes about future grants; the two treatments differ
-        # only in how they charge future ones. Adding it to the expense branch alone
-        # understated the dilute share count by exactly the overhang -- 4.8% on AAPL
-        # at a 5% overhang, worth 5.0% on value per share.
-        opening = f"({r['shares_in']}+{r['overhang']})"
-        shares = cur.label_value(
-            "(/) Diluted shares",
-            f'=IF({r["sbc_method"]}="dilute",'
-            f"{opening}/(1-{sbc_pv}/{equity}),"
-            f"{opening})",
-            S.SHARES_MM,
-            key="shares_out",
-        )
-        cur.note(
-            "Under dilute the share count solves the circularity in closed form: shares "
-            "issued depend on the price, which depends on the share count, and the fixed "
-            "point resolves to S = S0 / (1 - PV(SBC) / equity value). No iterative "
-            "calculation setting required, and it matches the Python solver exactly."
-        )
-        cur.note(
-            "Equivalently: diluting is just subtracting the present value of the stock you "
-            "will hand employees from equity value -- which is why also expensing SBC would "
-            "charge the same cost twice."
-        )
-        cur.label_value(
-            "Implied value per share", f"={equity}/{shares}", S.PRICE, key="vps", kind="total"
-        )
-        ws.cell(row=cur.row - 1, column=2).border = S.TOTAL_BORDER
-        cur.label_value("Current share price", f"={r['price']}", S.PRICE, kind="link")
-        cur.label_value(
-            "Upside / (downside)",
-            f"=IF({r['price']}=0,NA(),{self.refs['vps']}/{r['price']}-1)",
+            "Terminal value as % of EV",
+            f"=IF({r['ev']}=0,NA(),{r['pv_tv']}/{r['ev']})",
             S.PERCENT,
-            key="upside",
+            key="tv_pct",
         )
-
-        # Net bridge helper used by the sensitivity sheet.
         cur.label_value(
             "Memo: net debt and other bridge items",
             f"={r['debt']}-{r['cash']}+{r['minority']}+{r['preferred']}-{r['invest']}",
             S.MONEY_MM,
             key="net_bridge",
         )
-        self.refs["fcf_row"] = str(core_row)
-        self.refs["adj_row"] = str(adj_row)
-        self.refs["exp_row"] = str(exp_row)
-        # Full-year index, needed by the exit-multiple sensitivity grid: a sale price
-        # at a point in time is discounted the whole period, not the mid-year one.
-        self.refs["idx_row"] = str(idx_row)
-        self.refs["first_letter"] = get_column_letter(first)
-        self.refs["last_letter"] = get_column_letter(last)
-        ws.freeze_panes = f"{get_column_letter(base_col)}{header_row + 1}"
+        cur.label_value("Equity value", f"={r['ev']}-{r['net_bridge']}", S.MONEY_MM, key="equity")
+        cur.label_value(
+            "Memo: PV of future SBC (at cost of equity)",
+            f"=SUMPRODUCT({letters[0]}{sbc}:{letter}{sbc},1/((1+{r['coe']})^{letters[0]}{idx}:{letter}{idx}))*(1-{r['buyback']})",
+            S.MONEY_MM,
+            key="sbc_pv",
+        )
+        opening = f"({r['shares_in']}+{r['overhang']})"
+        cur.label_value(
+            "(/) Diluted shares",
+            f'=IF({r["sbc_method"]}="dilute",IF(OR({r["equity"]}<={r["sbc_pv"]},{r["coe"]}<=-1),NA(),{opening}/(1-{r["sbc_pv"]}/{r["equity"]})),{opening})',
+            S.SHARES_MM,
+            key="shares_out",
+        )
+        cur.label_value(
+            "Implied value per share",
+            f"=IF(AND({r['inputs_valid']},{r['wacc']}>0,{r['wacc']}<=1),{r['equity']}/{r['shares_out']},NA())",
+            self.price_format,
+            key="vps",
+            kind="total",
+        )
+        cur.label_value("Snapshot share price", f"={r['price']}", self.price_format)
+        cur.label_value(
+            "Upside / (downside)",
+            f"=IF({r['price']}<=0,NA(),{r['vps']}/{r['price']}-1)",
+            S.PERCENT,
+            key="upside",
+        )
+        r.update(
+            fcf_row=str(core),
+            adj_row=str(adj),
+            exp_row=str(exp),
+            idx_row=str(idx),
+            first_letter=letters[0],
+            last_letter=letter,
+        )
+        ws.freeze_panes = "D5"
 
     def _driver_row(
         self,
@@ -853,7 +914,9 @@ class ExcelModelBuilder:
         sign = "-" if negate else ""
         for i, letter in enumerate(letters):
             driver = _cell(driver_ref, offset=i + 1)
-            c = ws.cell(row=row, column=first_col + i, value=f"={sign}{letter}{revenue_row}*{driver}")
+            c = ws.cell(
+                row=row, column=first_col + i, value=f"={sign}{letter}{revenue_row}*{driver}"
+            )
             c.font, c.number_format = S.FORMULA_FONT, fmt
         cur.row += 1
         return row
@@ -861,115 +924,154 @@ class ExcelModelBuilder:
     # -------------------------------------------------------------- sensitivity
 
     def _sensitivity(self, ws: Worksheet) -> None:
-        S.col_width(ws, {"A": 26, "B": 12, "C": 12, "D": 12, "E": 12, "F": 12, "G": 12, "H": 12})
-        cur = SheetCursor(ws, self.refs)
+        """Trace each scenario through helper cells using the same terminal policy."""
         r = self.refs
-
-        cur.title("Sensitivity Analysis", width=8)
-        cur.note(
-            "Live formulas, not pasted values. Each cell rebuilds the valuation at that "
-            "discount rate and terminal assumption straight from the DCF sheet."
-        )
-        cur.skip()
-
-        base_wacc = self.result.wacc.wacc
-        base_growth = self.result.assumptions.terminal.perpetuity_growth
         cfg = self.result.assumptions.sensitivity
-
-        cur.section("Value per share: WACC against perpetuity growth", width=8)
-        growths = [base_growth + d for d in cfg.growth_deltas]
-        waccs = [base_wacc + d for d in cfg.wacc_deltas]
-
-        header_row = cur.row
-        ws.cell(row=header_row, column=1, value="WACC \\ growth").font = S.HEADER_FONT
-        ws.cell(row=header_row, column=1).fill = S.HEADER_FILL
-        # Formulas, not literals. Written as values these axes were fixed at build time:
-        # change beta or the ERP in the workbook and the grid silently stops bracketing
-        # the base case while still presenting itself as centred on it.
-        for j, delta in enumerate(cfg.growth_deltas):
-            sign = "+" if delta >= 0 else "-"
-            # `r["g"]` is the perpetuity growth input. `r["growth"]` is the revenue
-            # growth *series*, whose base column is deliberately blank -- pointing the
-            # axis there evaluated to 0 and produced a grid running from -1.0% to +1.0%
-            # perpetuity growth whose centre cell no longer matched the model's own
-            # answer. Introduced while converting these labels from literals, and the
-            # test written alongside only checked that the formula referenced some
-            # sheet, not that it referenced the right cell.
-            c = ws.cell(
-                row=header_row,
-                column=2 + j,
-                value=f"={r['g']}{sign}{abs(delta)}",
-            )
-            c.font, c.fill, c.number_format = S.HEADER_FONT, S.HEADER_FILL, S.PERCENT_2
-        cur.row += 1
-
-        first_l, last_l = r["first_letter"], r["last_letter"]
-        fcf_range = f"DCF!${first_l}${r['fcf_row']}:${last_l}${r['fcf_row']}"
-        exp_range = f"DCF!${first_l}${r['exp_row']}:${last_l}${r['exp_row']}"
-        last_adj = f"DCF!${last_l}${r['adj_row']}"
-        # Mid-year discount period (4.5 under a 5-year forecast). Correct for Gordon:
-        # a perpetuity of mid-year flows really does start half a year early.
-        last_exp = f"DCF!${last_l}${r['exp_row']}"
-        # Full period (5.0). An exit multiple is a sale price at a point in time, so it
-        # is discounted the whole way. The DCF sheet already branches on this; the two
-        # sensitivity grids below did not, and used the mid-year period for both --
-        # overstating every cell of the exit-multiple grid by (1+w)^0.5, about 4.9%.
-        last_idx = f"DCF!${last_l}${r['idx_row']}"
-
-        for _wacc, delta in zip(waccs, cfg.wacc_deltas, strict=True):
-            row = cur.row
-            sign = "+" if delta >= 0 else "-"
-            c = ws.cell(row=row, column=1, value=f"={r['wacc']}{sign}{abs(delta)}")
-            c.font, c.number_format = S.INPUT_FONT, S.PERCENT_2
-            for j, _ in enumerate(growths):
-                g_cell = f"{get_column_letter(2 + j)}${header_row}"
-                w_cell = f"$A{row}"
-                formula = (
-                    f'=IF({w_cell}<={g_cell},"n/a",'
-                    f"(SUMPRODUCT({fcf_range},1/((1+{w_cell})^{exp_range}))"
-                    f"+{last_adj}*(1+{g_cell})/({w_cell}-{g_cell})/(1+{w_cell})^{last_exp}"
-                    f"-{r['net_bridge']})/{r['shares_out']})"
-                )
-                cell = ws.cell(row=row, column=2 + j, value=formula)
-                cell.font, cell.number_format = S.FORMULA_FONT, S.PRICE
-            cur.row += 1
-        cur.skip()
-
-        cur.section("Value per share: WACC against exit multiple", width=8)
-        exit_result = self.result.terminal_all.get("exit_multiple")
-        base_multiple = (
-            exit_result.multiple_used
-            if exit_result and exit_result.multiple_used
-            else self.result.assumptions.terminal.static_exit_multiple
+        S.col_width(
+            ws,
+            {
+                "A": 30,
+                **{
+                    get_column_letter(i): 16
+                    for i in range(2, 2 + max(len(cfg.growth_deltas), len(cfg.multiple_deltas)))
+                },
+            },
         )
-        multiples = [max(base_multiple + d, 0.5) for d in cfg.multiple_deltas]
-
-        header2 = cur.row
-        ws.cell(row=header2, column=1, value="WACC \\ multiple").font = S.HEADER_FONT
-        ws.cell(row=header2, column=1).fill = S.HEADER_FILL
-        for j, m in enumerate(multiples):
-            c = ws.cell(row=header2, column=2 + j, value=m)
-            c.font, c.fill, c.number_format = S.HEADER_FONT, S.HEADER_FILL, S.MULTIPLE
-        cur.row += 1
-
-        term_ebitda = r["term_ebitda"]
-        for _wacc, delta in zip(waccs, cfg.wacc_deltas, strict=True):
-            row = cur.row
-            sign = "+" if delta >= 0 else "-"
-            c = ws.cell(row=row, column=1, value=f"={r['wacc']}{sign}{abs(delta)}")
-            c.font, c.number_format = S.INPUT_FONT, S.PERCENT_2
-            for j, _ in enumerate(multiples):
-                m_cell = f"{get_column_letter(2 + j)}${header2}"
-                w_cell = f"$A{row}"
+        cur = SheetCursor(ws, r)
+        cur.title("Sensitivity Analysis")
+        cur.note(
+            "Only WACC and the named terminal input vary. Cost of equity for issuance stays fixed."
+        )
+        cur.note(
+            "Trace every cell on SensitivityCalc. Unavailable cells are outside the model domain."
+        )
+        helper = ws.parent.create_sheet("SensitivityCalc")
+        helper.append(
+            [
+                "Scenario",
+                "WACC",
+                "Perpetuity growth",
+                "Exit multiple",
+                "FCF5 Gordon",
+                "Value driver",
+                "Effective Gordon",
+                "Exit value",
+                "Method used",
+                "Terminal value",
+                "Equity value",
+                "Value per share",
+            ]
+        )
+        for col in range(1, 13):
+            helper.column_dimensions[get_column_letter(col)].width = 21
+            helper.cell(1, col).font = S.HEADER_FONT
+            helper.cell(1, col).fill = S.HEADER_FILL
+        first, last = r["first_letter"], r["last_letter"]
+        fcf = f"DCF!${first}${r['fcf_row']}:${last}${r['fcf_row']}"
+        exp = f"DCF!${first}${r['exp_row']}:${last}${r['exp_row']}"
+        end = f"DCF!${last}${r['idx_row']}"
+        mid = f"DCF!${last}${r['exp_row']}"
+        for exit_grid in (False, True):
+            cur.skip()
+            cur.section("WACC against exit multiple" if exit_grid else "WACC against growth")
+            header = cur.row
+            ws.cell(header, 1, "WACC \\ multiple" if exit_grid else "WACC \\ growth")
+            deltas = cfg.multiple_deltas if exit_grid else cfg.growth_deltas
+            for j, delta in enumerate(deltas):
                 formula = (
-                    f"=(SUMPRODUCT({fcf_range},1/((1+{w_cell})^{exp_range}))"
-                    f"+{term_ebitda}*{m_cell}/(1+{w_cell})^{last_idx}"
-                    f"-{r['net_bridge']})/{r['shares_out']}"
+                    f"=MAX({r['exit_mult']}+({delta}),0.5)" if exit_grid else f"={r['g']}+({delta})"
                 )
-                cell = ws.cell(row=row, column=2 + j, value=formula)
-                cell.font, cell.number_format = S.FORMULA_FONT, S.PRICE
+                ws.cell(header, 2 + j, formula).number_format = (
+                    S.MULTIPLE if exit_grid else S.PERCENT_2
+                )
             cur.row += 1
+            for dw in cfg.wacc_deltas:
+                row = cur.row
+                ws.cell(row, 1, f"={r['wacc']}+({dw})").number_format = S.PERCENT_2
+                for j in range(len(deltas)):
+                    h = helper.max_row + 1
+                    w = f"B{h}"
+                    g = f"C{h}"
+                    mv = f"D{h}"
+                    gor = f"G{h}"
+                    vd = f"F{h}"
+                    ex = f"H{h}"
+                    helper.cell(
+                        h, 1, f"{'Exit' if exit_grid else 'Growth'} {get_column_letter(j + 2)}{row}"
+                    )
+                    helper.cell(h, 2, f"=Sensitivity!$A${row}")
+                    helper.cell(
+                        h,
+                        3,
+                        f"={r['g']}"
+                        if exit_grid
+                        else f"=Sensitivity!{get_column_letter(j + 2)}${header}",
+                    )
+                    helper.cell(
+                        h,
+                        4,
+                        f"=Sensitivity!{get_column_letter(j + 2)}${header}"
+                        if exit_grid
+                        else f"={r['exit_mult']}",
+                    )
+                    helper.cell(h, 5, f"=IF({w}<={g},NA(),{r['term_fcf']}*(1+{g})/({w}-{g}))")
+                    helper.cell(
+                        h,
+                        6,
+                        f"=IF(OR({w}<={g},{r['term_nopat']}<=0),NA(),{r['term_nopat']}*(1+{g})*(1-{g}/IF({r['ronic']}>0,{r['ronic']},{w}))/({w}-{g}))",
+                    )
+                    # Exit-only fallback is ordinary Gordon, as in TerminalValue.compute.
+                    mode = "FALSE" if exit_grid else f'{r["tv_pref"]}<>"exit_multiple"'
+                    helper.cell(
+                        h,
+                        7,
+                        f'=IF(AND({mode},{r["tv_mode"]}="value_driver",IFERROR({vd}>0,FALSE)),{vd},E{h})',
+                    )
+                    helper.cell(h, 8, f"=IF({r['term_ebitda']}<=0,NA(),{r['term_ebitda']}*{mv})")
 
+                    def positive(ref):
+                        return f"IFERROR({ref}>0,FALSE)"
+
+                    normal = f'IF({positive(gor)},"gordon",IF({positive(ex)},"exit_multiple",IF({positive(vd)},"value_driver","gordon")))'
+                    exfirst = f'IF({positive(ex)},"exit_multiple",{normal})'
+                    vdfirst = f'IF({positive(vd)},"value_driver",{normal})'
+                    method = (
+                        exfirst
+                        if exit_grid
+                        else f'IF({r["tv_pref"]}="value_driver",{vdfirst},IF({r["tv_pref"]}="exit_multiple",{exfirst},{normal}))'
+                    )
+                    helper.cell(h, 9, "=" + method)
+                    helper.cell(
+                        h, 10, f'=IF(I{h}="gordon",{gor},IF(I{h}="exit_multiple",{ex},{vd}))'
+                    )
+                    helper.cell(
+                        h,
+                        11,
+                        f'=SUMPRODUCT({fcf},1/((1+{w})^{exp}))+J{h}/(1+{w})^IF(I{h}="exit_multiple",{end},{mid})-{r["net_bridge"]}',
+                    )
+                    k = f'K{h}-IF({r["sbc_method"]}="dilute",{r["sbc_pv"]},0)'
+                    domain = f"OR({w}<=0,{w}>1,{g}<-.02,{g}>.06,{mv}<=0,{mv}>100)"
+                    if not exit_grid:
+                        domain = f"OR({domain},{w}<={g})"
+                    helper.cell(
+                        h,
+                        12,
+                        f'=IF(OR({domain},AND({r["sbc_method"]}="dilute",{k}<=0)),NA(),({k})/({r["shares_in"]}+{r["overhang"]}))',
+                    )
+                    ws.cell(
+                        row, j + 2, f"=SensitivityCalc!$L${h}"
+                    ).number_format = self.price_format
+                    for c in range(2, 13):
+                        helper.cell(h, c).font = S.FORMULA_FONT
+                    for c in [2, 3]:
+                        helper.cell(h, c).number_format = S.PERCENT_2
+                    for c in [4]:
+                        helper.cell(h, c).number_format = S.MULTIPLE
+                    for c in [5, 6, 7, 8, 10, 11]:
+                        helper.cell(h, c).number_format = S.MONEY_MM
+                    helper.cell(h, 12).number_format = self.price_format
+                cur.row += 1
+        helper.freeze_panes = "E2"
         ws.freeze_panes = "B4"
 
     # -------------------------------------------------------------------- comps
@@ -1020,7 +1122,9 @@ class ExcelModelBuilder:
             if median is None:
                 continue
             cur.label_value(label, float(median), fmt, kind="formula")
-        cur.label_value("Screened peer count", float(self.comps.peer_count), S.INTEGER, kind="formula")
+        cur.label_value(
+            "Screened peer count", float(self.comps.peer_count), S.INTEGER, kind="formula"
+        )
 
         notes = self.comps.notes()
         if notes:
@@ -1035,7 +1139,9 @@ class ExcelModelBuilder:
         S.col_width(ws, {"A": 34, "B": 14, "C": 14, "D": 14, "E": 14})
         cur = SheetCursor(ws, self.refs)
         cur.title("Valuation Summary - Football Field", width=5)
-        cur.note("Each bar is a range. A valuation is a range; a point estimate is a guess.")
+        cur.note(
+            "Ranges use the stated sensitivity or simulation. Single-point methods use a thin display band (0.4% total width, minimum 0.01); it is not an uncertainty estimate."
+        )
         cur.skip()
 
         if self.football is None or self.football.empty:
@@ -1051,10 +1157,10 @@ class ExcelModelBuilder:
             mid = _num(row.get("midpoint"))
             ws.cell(row=cur.row, column=1, value=str(row["method"])).font = S.LABEL_FONT
             for col, value, fmt in (
-                (2, low, S.PRICE),
-                (3, None if low is None or high is None else high - low, S.PRICE),
-                (4, high, S.PRICE),
-                (5, mid, S.PRICE),
+                (2, low, self.price_format),
+                (3, None if low is None or high is None else high - low, self.price_format),
+                (4, high, self.price_format),
+                (5, mid, self.price_format),
             ):
                 cell = ws.cell(row=cur.row, column=col, value=value)
                 cell.font = S.FORMULA_FONT
@@ -1069,7 +1175,7 @@ class ExcelModelBuilder:
         chart.grouping = "stacked"
         chart.overlap = 100
         chart.title = "Implied value per share"
-        chart.y_axis.title = "US$ per share"
+        chart.y_axis.title = f"{getattr(self.financials, 'currency', 'quote currency')} per share"
         chart.height, chart.width = 9, 18
 
         data = Reference(ws, min_col=2, max_col=3, min_row=first_data - 1, max_row=last_data)
@@ -1097,7 +1203,10 @@ class ExcelModelBuilder:
         S.col_width(ws, {"A": 34})
         cur.headers(
             ["Line item"]
-            + [str(p)[:10] if not hasattr(p, "date") else p.date().isoformat() for p in statements.columns]
+            + [
+                str(p)[:10] if not hasattr(p, "date") else p.date().isoformat()
+                for p in statements.columns
+            ]
         )
         for col in range(2, statements.shape[1] + 2):
             ws.column_dimensions[get_column_letter(col)].width = 16
@@ -1125,15 +1234,15 @@ class ExcelModelBuilder:
 
         cur.title(f"{result.ticker} - Valuation Summary", width=4)
         cur.note(
-            "Headline figures link to the DCF sheet. The reported-figure blocks below "
+            "Amounts and shares are in millions; prices are per share. Headline figures link to DCF. The reported-figure blocks below "
             "(comps, historicals and the SBC memo) are written as values, not formulas, "
             "so they will not follow a change made on Inputs -- rebuild the workbook."
         )
         cur.skip()
 
         cur.section("Conclusion", width=4)
-        cur.label_value("Implied value per share", f"={r['vps']}", S.PRICE, kind="link")
-        cur.label_value("Current share price", f"={r['price']}", S.PRICE, kind="link")
+        cur.label_value("Implied value per share", f"={r['vps']}", self.price_format, kind="link")
+        cur.label_value("Snapshot share price", f"={r['price']}", self.price_format, kind="link")
         cur.label_value("Upside / (downside)", f"={r['upside']}", S.PERCENT, kind="link")
         cur.skip()
 
@@ -1185,7 +1294,7 @@ class ExcelModelBuilder:
                     ticker=result.ticker,
                 )
 
-                cur.section("Economic Moat & Capital Efficiency", width=4)
+                cur.section("Accounting Capital Efficiency (Moat Unverified)", width=4)
                 cur.label_value(
                     "Invested capital (base)", moat.invested_capital_base, S.MONEY_MM, kind="input"
                 )
@@ -1219,24 +1328,33 @@ class ExcelModelBuilder:
 
                 vps_ref = r["vps"]
                 cur.label_value(
-                    "Target entry (15% moat discount)", f"={vps_ref}*0.85", S.PRICE, kind="link"
+                    "Illustrative 15% discount to modeled value",
+                    f"={vps_ref}*0.85",
+                    self.price_format,
+                    kind="link",
                 )
                 cur.label_value(
-                    "Target entry (25% standard discount)", f"={vps_ref}*0.75", S.PRICE, kind="link"
+                    "Illustrative 25% discount to modeled value",
+                    f"={vps_ref}*0.75",
+                    self.price_format,
+                    kind="link",
                 )
                 cur.label_value(
-                    "Target entry (35% deep value discount)", f"={vps_ref}*0.65", S.PRICE, kind="link"
+                    "Illustrative 35% discount to modeled value",
+                    f"={vps_ref}*0.65",
+                    self.price_format,
+                    kind="link",
                 )
                 cur.skip()
-            except Exception:
-                pass
+            except (ValueError, ArithmeticError) as exc:
+                cur.note(f"Diagnostic unavailable: {exc}", warn=True)
 
         if self.monte_carlo:
             cur.section("Monte Carlo (WACC, terminal growth, EBIT margin)", width=4)
             for key, label, fmt in (
-                ("p10", "10th percentile", S.PRICE),
-                ("p50", "Median", S.PRICE),
-                ("p90", "90th percentile", S.PRICE),
+                ("p10", "10th percentile", self.price_format),
+                ("p50", "Median", self.price_format),
+                ("p90", "90th percentile", self.price_format),
                 ("prob_above_market", "Probability above market price", S.PERCENT),
             ):
                 if key in self.monte_carlo:

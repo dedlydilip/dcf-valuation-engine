@@ -1,23 +1,14 @@
-"""Valuation orchestration, including the share-count fixed point.
+"""Valuation orchestration and the analytic dilution fixed point.
 
-Under the dilute treatment of SBC the model is genuinely circular: the number of
-shares issued to employees depends on the price they are issued at, which depends on
-equity value per share, which depends on the share count. Excel resolves this with
-iterative calculation; here it is an explicit loop, which has the advantage of being
-able to fail loudly.
-
-It does fail, sometimes, and the failure is informative. When forecast SBC is large
-relative to equity value, each pass issues more shares, which lowers the price, which
-issues still more shares. A company in that state cannot pay its staff in stock
-without destroying the value of the stock, and `ConvergenceError` says so rather than
-quietly returning whatever the last iterate happened to be.
-
-The fixed point also has a closed form, derived in `closed_form_dilution_price`, which
-the test suite uses to prove the solver lands where the algebra says it should.
+Issuance prices are assumed to grow at cost of equity. Under that stated
+policy the fixed point has a closed form; there is no iterative tolerance
+error. A compensation claim that exhausts equity has no positive solution.
 """
 
 from __future__ import annotations
 
+import math
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,6 +53,9 @@ class ValuationResult:
     dilution: DilutionPath | None = None
     iterations: int = 1
     warnings: list[str] = field(default_factory=list)
+    financials: Any = None
+    comps_inputs: dict[str, Any] = field(default_factory=dict)
+    manifest: dict[str, Any] = field(default_factory=dict)
 
     @property
     def enterprise_value(self) -> float:
@@ -111,6 +105,8 @@ class ValuationResult:
             "upside": self.bridge.upside,
             "terminal_value_pct_ev": self.terminal_value_share,
             "iterations": self.iterations,
+            "manifest": self.manifest,
+            "warnings": self.warnings,
         }
 
 
@@ -204,16 +200,64 @@ class DCFEngine:
         ticker: str | None = None,
     ) -> None:
         self.financials = financials
-        self.assumptions = assumptions or DCFAssumptions()
+        self.assumptions = DCFAssumptions.model_validate(
+            (assumptions or DCFAssumptions()).model_dump()
+        )
         self.comps_multiples = comps_multiples or {}
         self.ticker = ticker or getattr(financials, "ticker", "N/A")
         self._core: _Core | None = None
 
     def run(self) -> ValuationResult:
-        core = self._compute_core()
-        if self.assumptions.sbc.grow_share_count:
-            return self._solve_dilution(core)
-        return self._assemble(core, self._starting_shares(), dilution=None, iterations=1)
+        self._core = None
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            core = self._compute_core()
+            result = (
+                self._solve_dilution(core)
+                if self.assumptions.sbc.grow_share_count
+                else self._assemble(core, self._starting_shares(), dilution=None, iterations=1)
+            )
+        if not all(
+            math.isfinite(v)
+            for v in (result.value_per_share, result.enterprise_value, result.wacc.wacc)
+        ):
+            raise ValueError("Valuation is non-finite; no result can be published")
+        result.warnings = _dedupe(result.warnings + [str(w.message) for w in captured])
+        from src.models.provenance import run_manifest
+
+        result.manifest = run_manifest(self.financials, self.assumptions)
+        aliases = (
+            getattr(self.financials, "provenance", {}).get("source_aliases", {}).get("ebit", {})
+        )
+        if aliases:
+            latest_alias = next(reversed(aliases.values()))
+            if latest_alias.lower() != "operating income":
+                result.warnings.append(
+                    f"EBIT uses provider alias '{latest_alias}'; reconcile its operating/non-operating definition with the filing before relying on the margin."
+                )
+        if self.assumptions.projection.margin_basis == "after_sbc":
+            result.warnings.append(
+                "Forecast margin is after SBC. Changing SBC alone holds total reported operating profit fixed; use before_sbc margin basis to model incremental compensation cost."
+            )
+        result.warnings.append(
+            "Cash taxes assume SBC is deductible and tax losses carry forward without expiry or annual utilization caps. Local tax rules and grant settlement differences require separate modeling."
+        )
+        if self.assumptions.wacc.cost_of_debt_override is None:
+            result.warnings.append(
+                "Cost of debt is a historical book-yield proxy (or risk-free fallback), not a current marginal borrowing yield. Supply a currency-consistent market borrowing-rate override for decision use."
+            )
+        if not result.manifest.get("market_timestamp"):
+            result.warnings.append(
+                "Market quote timestamp is unknown; this is an undated snapshot valuation, not a current or historical as-of valuation."
+            )
+        result.warnings.append(
+            "Scenario values depend on uncalibrated assumptions; they are not verified fair values or investment recommendations."
+        )
+        if self.assumptions.valuation_date is not None:
+            raise ValueError(
+                "As-of valuation with dated stub cash flows is not implemented; omit valuation_date for an explicitly undated snapshot model"
+            )
+        return result
 
     def _starting_shares(self) -> float:
         """Shares outstanding today, plus any already-granted overhang.
@@ -228,9 +272,7 @@ class DCFEngine:
         the two methods then disagreed by exactly the overhang, which quietly broke the
         convergence property the README rests on.
         """
-        return expense_method_share_count(
-            base_share_count(self.financials), self.assumptions.sbc
-        )
+        return expense_method_share_count(base_share_count(self.financials), self.assumptions.sbc)
 
     # ---------------------------------------------------------------- core pass
 
@@ -251,6 +293,8 @@ class DCFEngine:
         projection = projector.result
         wacc_calc = WACCCalculator(self.financials, assumptions)
         wacc = wacc_calc.wacc
+        if not math.isfinite(wacc) or wacc <= 0:
+            raise ValueError("A positive finite WACC is required")
 
         fcf = [float(v) for v in projection.unlevered_fcf]
         years = len(fcf)
@@ -273,7 +317,10 @@ class DCFEngine:
         # accounting choice. Beyond the horizon, perpetual dilution and perpetual
         # expensing describe the same steady state, so the model expenses it.
         terminal_fcf = float(projection.adjusted_fcf.iloc[-1])
-        terminal_nopat = float(projection.table.loc["nopat"].iloc[-1])
+        terminal_ebit = float(projection.table.loc["ebit"].iloc[-1])
+        terminal_nopat = terminal_ebit - max(terminal_ebit, 0.0) * assumptions.projection.tax_rate
+        # NOLs are finite, so do not capitalize final-year tax relief forever.
+        terminal_fcf += terminal_nopat - float(projection.table.loc["nopat"].iloc[-1])
 
         tv = TerminalValue(assumptions, self.comps_multiples)
         terminal_all = tv.compute(
@@ -291,9 +338,7 @@ class DCFEngine:
         # headline and what the other one implies. Computing an exit multiple, printing
         # it, cross-checking it and then discarding it without comment reads as a blend.
         if assumptions.terminal.method == "both":
-            other = terminal_all.get(
-                "exit_multiple" if terminal.method == "gordon" else "gordon"
-            )
+            other = terminal_all.get("exit_multiple" if terminal.method == "gordon" else "gordon")
             if other is not None and other.ok and terminal.value:
                 spread = other.value / terminal.value - 1.0
                 warnings_out.append(
@@ -322,10 +367,9 @@ class DCFEngine:
             reinvestment = terminal_capex / terminal_da
             if reinvestment > 1.3 or reinvestment < 0.7:
                 warnings_out.append(
-                    f"Terminal-year capex is {reinvestment:.2f}x depreciation. A steady state "
-                    f"implies roughly 1.0x, so the terminal value capitalises a growth-phase "
-                    f"reinvestment gap into perpetuity. Consider normalising capex toward D&A "
-                    f"in the final forecast year."
+                    f"Terminal-year capex is {reinvestment:.2f}x depreciation. Review whether "
+                    f"this reinvestment supports the assumed perpetual growth and return on "
+                    f"new capital. Capex equal to D&A is not a universal steady-state rule."
                 )
 
         if pd.notna(enterprise_value) and enterprise_value > 0:
@@ -354,9 +398,7 @@ class DCFEngine:
     def _assemble(
         self, core: _Core, shares: float, dilution: DilutionPath | None, iterations: int
     ) -> ValuationResult:
-        bridge = build_bridge(
-            core.enterprise_value, self.financials, self.assumptions, shares
-        )
+        bridge = build_bridge(core.enterprise_value, self.financials, self.assumptions, shares)
         return ValuationResult(
             ticker=self.ticker,
             assumptions=self.assumptions,
@@ -371,13 +413,14 @@ class DCFEngine:
             dilution=dilution,
             iterations=iterations,
             warnings=list(core.warnings),
+            financials=self.financials,
+            comps_inputs=dict(self.comps_multiples),
         )
 
     # --------------------------------------------------------- dilution solver
 
     def _solve_dilution(self, core: _Core) -> ValuationResult:
         """Iterate share count and share price to a fixed point."""
-        solver = self.assumptions.solver
         # Includes the already-granted overhang, exactly as the expense path does.
         # Seeding from the bare count here was the asymmetry between the two methods.
         base_shares = self._starting_shares()
@@ -397,33 +440,19 @@ class DCFEngine:
             )
 
         sbc_dollars = [float(v) for v in core.projection.table.loc["sbc"]]
-        result = seed
-        path: DilutionPath | None = None
-
-        for iteration in range(1, solver.max_iterations + 1):
-            path = tracker.forecast(sbc_dollars, base_price=price, price_growth=price_growth)
-            result = self._assemble(core, path.ending_shares, path, iteration)
-            new_price = result.value_per_share
-
-            if pd.isna(new_price) or new_price <= 0:
-                raise ConvergenceError(
-                    f"{self.ticker}: share price went non-positive at iteration {iteration}. "
-                    f"Forecast stock compensation is too large relative to equity value for "
-                    f"the dilute treatment to have a solution."
-                )
-
-            if abs(new_price - price) / price < solver.tolerance:
-                result.iterations = iteration
-                return result
-
-            price = new_price
-
-        raise ConvergenceError(
-            f"{self.ticker}: share count and share price did not settle within "
-            f"{solver.max_iterations} iterations (tolerance {solver.tolerance:.2%}). "
-            f"Each pass issues more stock, which lowers the price, which issues more "
-            f"stock again."
+        final_price = closed_form_dilution_price(
+            seed.bridge.equity_value,
+            base_shares,
+            sbc_dollars,
+            price_growth,
+            self.assumptions.sbc.buyback_offset_pct,
         )
+        path = tracker.forecast(sbc_dollars, base_price=final_price, price_growth=price_growth)
+        result = self._assemble(core, path.ending_shares, path, 1)
+        result.warnings.append(
+            "Dilution uses a stylized issuance-price path growing at cost of equity; grant expense is used as issuance dollars. This is not a vesting/option-pricing forecast."
+        )
+        return result
 
 
 def value_company(

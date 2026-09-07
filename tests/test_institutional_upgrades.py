@@ -42,14 +42,22 @@ def test_mckinsey_value_driver_moat_vs_destruction():
     wacc = 0.10
 
     # Wide Moat: RONIC = 20% > WACC (10%)
-    tv_moat_low_g = calc.value_driver_value(terminal_nopat, wacc=wacc, growth=0.02, ronic=0.20).value
-    tv_moat_high_g = calc.value_driver_value(terminal_nopat, wacc=wacc, growth=0.04, ronic=0.20).value
+    tv_moat_low_g = calc.value_driver_value(
+        terminal_nopat, wacc=wacc, growth=0.02, ronic=0.20
+    ).value
+    tv_moat_high_g = calc.value_driver_value(
+        terminal_nopat, wacc=wacc, growth=0.04, ronic=0.20
+    ).value
     # Higher growth with positive spread must CREATE value:
     assert tv_moat_high_g > tv_moat_low_g
 
     # Value Destructive: RONIC = 5% < WACC (10%)
-    tv_destr_low_g = calc.value_driver_value(terminal_nopat, wacc=wacc, growth=0.02, ronic=0.05).value
-    tv_destr_high_g = calc.value_driver_value(terminal_nopat, wacc=wacc, growth=0.04, ronic=0.05).value
+    tv_destr_low_g = calc.value_driver_value(
+        terminal_nopat, wacc=wacc, growth=0.02, ronic=0.05
+    ).value
+    tv_destr_high_g = calc.value_driver_value(
+        terminal_nopat, wacc=wacc, growth=0.04, ronic=0.05
+    ).value
     # Higher growth with negative spread must DESTROY value:
     assert tv_destr_high_g < tv_destr_low_g
 
@@ -105,7 +113,10 @@ def test_include_investments_bridge():
     # Apple reports $77,723,000,000 in long-term investments
     assert res_incl.bridge.investments == 77_723_000_000.0
     # Equity value must be higher by exactly the portfolio value
-    assert pytest.approx(res_incl.bridge.equity_value - res_excl.bridge.equity_value) == 77_723_000_000.0
+    assert (
+        pytest.approx(res_incl.bridge.equity_value - res_excl.bridge.equity_value)
+        == 77_723_000_000.0
+    )
     # Value per share increases from ~$120.08 to ~$125.41 (+4.4%)
     assert res_incl.value_per_share > res_excl.value_per_share
     pct_gain = (res_incl.value_per_share / res_excl.value_per_share) - 1.0
@@ -135,11 +146,11 @@ def test_excel_summary_sheet_parity(tmp_path: Path):
         for cell in row:
             if cell is not None:
                 text = str(cell)
-                if "Economic Moat & Capital Efficiency" in text:
+                if "Accounting Capital Efficiency (Moat Unverified)" in text:
                     found_moat = True
                 if "Market Expectations & Margin of Safety" in text:
                     found_expectations = True
-                if "Target entry (15% moat discount)" in text:
+                if "Illustrative 15% discount to modeled value" in text:
                     found_target_entry = True
 
     assert found_moat, "Summary sheet missing Economic Moat section"

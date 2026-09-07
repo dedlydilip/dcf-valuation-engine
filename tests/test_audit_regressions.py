@@ -211,9 +211,7 @@ class TestH3DebtFreeCompany:
             {"Cash And Cash Equivalents": 60.0, "Ordinary Shares Number": 100.0},
             {"Operating Cash Flow": 250.0},
         )
-        financials = Financials(
-            ticker="NODEBT", statements=statements, info={"marketCap": 5000.0}
-        )
+        financials = Financials(ticker="NODEBT", statements=statements, info={"marketCap": 5000.0})
         report = DataQualityGate(financials).validate()
         assert report.ok
         assert any("total_debt" in w for w in report.warnings)
@@ -266,9 +264,7 @@ class TestH7TerminalDiscounting:
         assert terminal_discount_factor(0.10, 5, True, "gordon") == pytest.approx(1 / 1.1**4.5)
 
     def test_exit_multiple_discounts_at_the_full_year(self):
-        assert terminal_discount_factor(0.10, 5, True, "exit_multiple") == pytest.approx(
-            1 / 1.1**5
-        )
+        assert terminal_discount_factor(0.10, 5, True, "exit_multiple") == pytest.approx(1 / 1.1**5)
 
     def test_the_two_differ_by_exactly_the_half_year(self):
         gordon = terminal_discount_factor(0.10, 5, True, "gordon")
@@ -352,7 +348,9 @@ class TestM1M2Buybacks:
             result = engine.run()
             core = engine._compute_core()
             shares = base_share_count(financials)
-            equity = build_bridge(core.enterprise_value, financials, assumptions, shares).equity_value
+            equity = build_bridge(
+                core.enterprise_value, financials, assumptions, shares
+            ).equity_value
             sbc = [float(v) for v in core.projection.table.loc["sbc"]]
 
             expected = closed_form_dilution_price(
@@ -432,9 +430,7 @@ class TestSbcEquivalenceStillHolds:
         values = {}
         for method in ("expense", "dilute"):
             assumptions = DCFAssumptions.from_yaml(overrides={"sbc": {"method": method}})
-            values[method] = DCFEngine(
-                financials, assumptions, ticker=ticker
-            ).run().value_per_share
+            values[method] = DCFEngine(financials, assumptions, ticker=ticker).run().value_per_share
 
         gap = abs(values["dilute"] / values["expense"] - 1.0)
         # 5% binds: the measured worst case is TSLA at 3.9%. The old 15% threshold

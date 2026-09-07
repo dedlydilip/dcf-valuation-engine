@@ -19,6 +19,7 @@ higher multiple would double-count it -- the same error as charging SBC twice.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,7 +53,7 @@ class TerminalValueResult:
 
     @property
     def ok(self) -> bool:
-        return pd.notna(self.value) and self.value > 0
+        return math.isfinite(self.value) and self.value > 0
 
 
 class TerminalValue:
@@ -87,7 +88,10 @@ class TerminalValue:
             median is not None
             and pd.notna(median)
             and median > 0
-            and (peer_count is None or peer_count >= MIN_PEERS_FOR_MEDIAN)
+            and (
+                peer_count is None
+                or peer_count >= self.comps.get("min_peers", MIN_PEERS_FOR_MEDIAN)
+            )
         )
         peer_multiple = float(median) if use_median else float(cfg.static_exit_multiple)
 
@@ -303,8 +307,7 @@ class TerminalValue:
         out: dict[str, TerminalValueResult] = {}
         method = self.assumptions.method
         use_value_driver = (
-            self.assumptions.terminal_fcf_mode == "value_driver"
-            or method == "value_driver"
+            self.assumptions.terminal_fcf_mode == "value_driver" or method == "value_driver"
         )
 
         if terminal_nopat is not None:
@@ -341,15 +344,18 @@ class TerminalValue:
         # gate warns that the model will fall back to Gordon -- so compute it, rather
         # than leaving `select` to choose between one broken result and nothing.
         if "gordon" not in out and not out.get("exit_multiple", _MISSING).ok:
-            out["gordon"] = self.gordon_value(
-                terminal_fcf, wacc, terminal_ebitda=terminal_ebitda
-            )
+            out["gordon"] = self.gordon_value(terminal_fcf, wacc, terminal_ebitda=terminal_ebitda)
         if "exit_multiple" not in out and not out.get("gordon", _MISSING).ok:
             out["exit_multiple"] = self.exit_multiple_value(
                 terminal_ebitda, year5_revenue_growth, terminal_fcf=terminal_fcf, wacc=wacc
             )
 
-        if "gordon" in out and "exit_multiple" in out and out["gordon"].ok and out["exit_multiple"].ok:
+        if (
+            "gordon" in out
+            and "exit_multiple" in out
+            and out["gordon"].ok
+            and out["exit_multiple"].ok
+        ):
             gap = abs(out["gordon"].value - out["exit_multiple"].value) / out["gordon"].value
             if gap > 0.35:
                 note = (
@@ -394,10 +400,15 @@ class TerminalValue:
                     )
                 return result
 
-        for result in results.values():
-            if result is not None:
+        # Retain finite zero/negative cash-flow values as distress diagnostics, never NaN.
+        for key in order:
+            result = results.get(key)
+            if result is not None and math.isfinite(result.value):
+                result.warnings.append(
+                    "Nonpositive terminal value: distress diagnostic, not a tradable equity target."
+                )
                 return result
-        raise ValueError("no terminal value could be computed")
+        raise ValueError("No finite terminal value is available; revise terminal assumptions")
 
 
 def implied_perpetuity_growth(

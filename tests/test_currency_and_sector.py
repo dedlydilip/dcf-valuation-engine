@@ -51,9 +51,7 @@ def _run(ticker: str, overrides: dict | None = None):
 
 
 class TestCurrencyMismatchIsRefused:
-    @pytest.mark.parametrize(
-        "ticker,statement", [("TSM", "TWD"), ("SAP", "EUR")]
-    )
+    @pytest.mark.parametrize("ticker,statement", [("TSM", "TWD"), ("SAP", "EUR")])
     def test_an_unconverted_adr_raises(self, ticker, statement):
         with pytest.raises(DataQualityError) as exc:
             _run(ticker)
@@ -69,7 +67,7 @@ class TestCurrencyMismatchIsRefused:
     def test_a_us_company_is_untouched(self):
         """The whole point: this must be invisible to every domestic ticker."""
         result, financials = _run("AAPL")
-        assert result.value_per_share == pytest.approx(120.08, abs=0.01)
+        assert result.value_per_share == pytest.approx(120.2420, abs=0.01)
         assert financials.fx_rate_applied is None
         assert not financials.converted
 
@@ -108,22 +106,20 @@ class TestConversion:
         result, financials = _run(ticker, {"currency": {"fx_rate": rate}})
 
         assert financials.fx_rate_applied == pytest.approx(rate)
-        assert financials.original_currency == "USD"
+        assert financials.original_currency == statement
         assert result.value_per_share == pytest.approx(expected, abs=0.01), (
             f"{ticker} converted at {rate} now values at {result.value_per_share:,.4f}, "
             f"not the pinned {expected:,.4f}"
         )
 
-    @pytest.mark.parametrize(
-        "ticker,rate", [("TSM", TWD_USD), ("SAP", EUR_USD)]
-    )
+    @pytest.mark.parametrize("ticker,rate", [("TSM", TWD_USD), ("SAP", EUR_USD)])
     def test_an_inverted_rate_is_caught(self, ticker, rate):
         """The mutation the old ratio-band assertion let through on SAP."""
         correct, _ = _run(ticker, {"currency": {"fx_rate": rate}})
         inverted, _ = _run(ticker, {"currency": {"fx_rate": 1.0 / rate}})
-        assert inverted.value_per_share != pytest.approx(
-            correct.value_per_share, rel=0.01
-        ), "inverting the rate must change the answer materially"
+        assert inverted.value_per_share != pytest.approx(correct.value_per_share, rel=0.01), (
+            "inverting the rate must change the answer materially"
+        )
 
     def test_conversion_rewrites_the_statement_currency(self):
         """Which is what lets the quality gate pass without a separate flag."""
@@ -222,8 +218,7 @@ class TestCompsExcludeMismatchedPeers:
 
         multiples = result.table["ev_ebitda"].dropna()
         assert (multiples > 1.0).all(), (
-            f"a sub-1x EV/EBITDA is a currency error, not a cheap stock: "
-            f"{multiples.to_dict()}"
+            f"a sub-1x EV/EBITDA is a currency error, not a cheap stock: {multiples.to_dict()}"
         )
 
     def test_a_coherent_foreign_peer_would_be_kept(self):
@@ -258,9 +253,9 @@ class TestSectorSuitability:
         "Mortgage Finance",
     ]
     ALLOWED = [
-        "Credit Services",             # V, MA, AXP -- payment networks
+        # V, MA, AXP -- payment networks
         "Financial Data & Stock Exchanges",  # SPGI, CME, ICE
-        "Insurance Brokers",           # AJG -- a fee business, not an underwriter
+        "Insurance Brokers",  # AJG -- a fee business, not an underwriter
         "Consumer Electronics",
         "Semiconductors",
     ]
