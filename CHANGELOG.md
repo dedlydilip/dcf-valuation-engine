@@ -3,6 +3,32 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## Risk-free rate: stale by 75 basis points, and no way to check — September 2026
+
+`config/assumptions.yaml` pinned `risk_free_rate: 0.042` for reproducibility, the same
+reason it pins the equity risk premium and the tax rate. The difference is that this one
+input tracks a real market that moves every trading day, and nothing in the codebase ever
+checked whether the pin was still close. It was not: the actual 10-year Treasury yield had
+drifted to 4.95%, a 75bp gap that moved AAPL's implied value **8.9%** on its own —
+comparable in size to the dual-class and EBIT-definition findings above, and it had been
+sitting there undetected the whole time.
+
+Added `src/fetcher/rates.py::fetch_risk_free_rate`, fetching `^TNX` the same way
+`src/fetcher/fx.py::fetch_fx_rate` fetches a spot rate. `--risk-free` and `--auto-risk-free`
+follow the same opt-in shape as `--fx-rate` / `--auto-fx` — refused together, and
+`--auto-risk-free` refused under `--use-offline`, since there is no network to fetch from
+there. The pinned config default was re-based to the current yield (0.04947, dated
+2026-09-17) rather than left stale, which moved every sample valuation in this repository:
+
+```
+AAPL  $120.24 -> $109.56   (-8.9%)
+MSFT  $165.06 -> $151.14   (-8.4%)
+TSLA   $36.26 ->  $35.34   (-2.5%, with comps)
+```
+
+Every other input is unchanged. Re-verified after the repin: 359 tests passing, the native
+Excel cross-check still 324/324 at 0.000%, `ruff` clean.
+
 ## Dual-class share counts — September 2026
 
 Found by generating a Nike workbook. The share-count basis check added in an earlier

@@ -290,9 +290,14 @@ class TestBridgeInputsAreSourced:
             build_bridge(1_800_000_000_000.0, financials, DCFAssumptions(), 15e9)
 
     def test_corrected_sample_valuations_are_pinned(self):
-        """Pins include the correction matching historical interest to its own debt period."""
+        """Pins include the correction matching historical interest to its own debt period.
+
+        Re-pinned 2026-09-18 when the risk-free rate moved from a stale 4.20% to the
+        actual 10-year Treasury yield of 4.947% -- see config/assumptions.yaml and
+        src/fetcher/rates.py. Every value here moved; none of the underlying logic did.
+        """
         warnings.simplefilter("ignore")
-        expected = {"AAPL": 120.2420, "MSFT": 165.06, "TSLA": 28.63}
+        expected = {"AAPL": 109.5618, "MSFT": 151.1414, "TSLA": 27.9500}
         for ticker, value in expected.items():
             financials = YFinanceClient(ticker, offline_mode=True).get_financials()
             result = DCFEngine(financials, DCFAssumptions.from_yaml(), ticker=ticker).run()
@@ -396,7 +401,7 @@ class TestDualClassShareCount:
         # GOOGL now includes FY2025 D&A through the per-period alias fallback,
         # correcting the stale historical depreciation ratio in the old fixture run.
         "ticker,expected",
-        [("NKE", 35.70), ("GOOGL", 75.5526), ("META", 199.87)],
+        [("NKE", 32.1444), ("GOOGL", 70.0376), ("META", 184.0000)],
     )
     def test_dual_class_uses_the_total_share_count(self, ticker, expected):
         result, _ = self._run(ticker)

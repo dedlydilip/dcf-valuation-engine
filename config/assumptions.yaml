@@ -14,7 +14,11 @@ projection:
   mid_year_convention: true    # cash flows arrive mid-period, not at year end
 
 wacc:
-  risk_free_rate: 0.042
+  # 10-year US Treasury yield, pinned 2026-09-17 so every valuation reproduces exactly
+  # on re-run. This drifts with the real market and is not refreshed automatically --
+  # pass --risk-free to supply a different dated value, or --auto-risk-free to fetch
+  # the current yield live (needs network; see src/fetcher/rates.py).
+  risk_free_rate: 0.04947
   equity_risk_premium: 0.055
   beta_override: null          # null => fetch from yfinance
   cost_of_debt_override: null  # null => interest expense / average total debt

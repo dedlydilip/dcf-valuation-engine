@@ -299,9 +299,9 @@ The **SBC treatment is a live switch**. Type `dilute` in the SBC method cell on 
 the tax line, the free cash flow line and the share count all change together:
 
 ```
-method 'expense' -> value per share 120.2420, shares 14,594,180,000
-method 'dilute'  -> value per share 120.4470, shares 15,060,414,083
-value moved +0.17%, share count moved +3.19%
+method 'expense' -> value per share 109.5618, shares 14,594,180,000
+method 'dilute'  -> value per share 109.7774, shares 15,095,801,000
+value moved +0.20%, share count moved +3.44%
 ```
 
 The sensitivity grids are live too — each cell rebuilds the valuation at that discount
@@ -318,22 +318,26 @@ Base case, SBC expensed, as of the committed fixtures:
 
 | | Implied | Market | Upside | WACC | TV % of EV |
 |---|---|---|---|---|---|
-| AAPL | $120.24 | $319.70 | −62.4% | 10.02% | 71.1% |
-| MSFT | $165.06 | $513.53 | −67.9% | 10.15% | 70.7% |
-| TSLA | $36.26 | $348.75 | −89.6% | 14.12% | 99.8% |
+| AAPL | $109.56 | $319.70 | −65.7% | 10.75% | 68.8% |
+| MSFT | $151.14 | $513.53 | −70.6% | 10.89% | 68.4% |
+| TSLA | $35.34  | $348.75 | −89.9% | 14.86% | 99.8% |
 
 **Read these as an illustration of the machinery, not as a recommendation.** The model is
 deliberately not calibrated to market prices, because reverse-engineering assumptions
 until the answer matches the tape is the one thing a valuation must never do. AAPL moves
-from $83 to $166 across the bear/bull scenarios, and the sensitivity table spans roughly
-$88 to $194 on WACC and growth. The range is the output; the point estimate is an artefact
+from $77 to $149 across the bear/bull scenarios, and the sensitivity table spans roughly
+$83 to $167 on WACC and growth. The range is the output; the point estimate is an artefact
 of the assumptions listed on one sheet.
 
 Two things drive the gap, and it is worth separating them:
 
-- **Apple** is mostly a discount-rate story. A 10% WACC comes from a 4.2% risk-free rate
-  and a 5.5% equity risk premium; practitioners frequently use materially lower figures,
-  and a reverse DCF shows the market price is reachable with a plausible lower rate.
+- **Apple is a growth-and-margin story, not a discount-rate one.** The 10.75% WACC is
+  built on the actual 10-year Treasury yield (4.95%, fetched live — see `--auto-risk-free`
+  below) rather than a guessed or stale figure, so there is no lower "more reasonable"
+  rate hiding in the assumption. The reverse DCF instead shows what the $319.70 price
+  actually requires: a 31.4% five-year revenue CAGR and a 93.3% operating margin, neither
+  of which the model treats as a plausible forecast — it reports them so the reader can
+  judge that for themselves.
 - **Microsoft is not.** Its terminal year carries capex at **2.5× depreciation**, because
   the forecast drivers default to trailing averages and Microsoft is mid-way through an AI
   build-out. Gordon then capitalises that reinvestment gap into perpetuity. The model now
@@ -437,7 +441,7 @@ Two things converting does **not** fix, and the model says so out loud each time
   rate differential has a forward curve that is anything but flat.
 - **Converting amounts does not convert rates.** The cost of equity is built from the
   configured risk-free rate and ERP — USD assumptions — while the cost of debt is the
-  company's actual local borrowing rate. Toyota's is 0.50% against a 4.20% US risk-free
+  company's actual local borrowing rate. Toyota's is 0.50% against a 4.95% US risk-free
   rate, inside one WACC. Re-basing one or the other is a judgement the model will not make
   for you.
 
@@ -446,6 +450,28 @@ peer whose statements and quote disagree is excluded from the medians with a sta
 Unconverted, TSM computed at **0.03x EV/EBITDA**, which the outlier screen waved through
 because the plausibility band starts at zero. A bad peer is quieter than a bad target — it
 moves a median instead of producing an absurd share price.
+
+### The risk-free rate can go stale the same way an FX rate can
+
+`config/assumptions.yaml` pins the risk-free rate for the same reason it pins everything
+else: a valuation has to reproduce exactly when someone re-runs it later. The problem is
+that this one input tracks a real market that moves every trading day, and unlike the
+FX-mismatch guard above, nothing used to check whether the pin was still current. It
+drifted 75 basis points before anyone noticed — enough to move AAPL's implied value by
+8.9% on its own, a bigger swing than most of the findings this project treats as genuine
+defects.
+
+```bash
+python run.py value --ticker AAPL --auto-risk-free   # fetch the current 10-year yield
+python run.py value --ticker AAPL --risk-free 0.05    # or supply your own, dated
+```
+
+Same shape as `--fx-rate` / `--auto-fx`: opt-in, not the default, and refused together
+with `--use-offline` — there is no network to fetch from in offline mode, so a stale pin
+there is expected, not a bug. `src/fetcher/rates.py` fetches `^TNX` (the 10-year Treasury
+yield) exactly the way `src/fetcher/fx.py` fetches a spot rate, and is silent about
+anything but the risk-free assumption — cost of debt, ERP and every other WACC input are
+untouched.
 
 ---
 

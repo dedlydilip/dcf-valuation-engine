@@ -67,7 +67,7 @@ class TestCurrencyMismatchIsRefused:
     def test_a_us_company_is_untouched(self):
         """The whole point: this must be invisible to every domestic ticker."""
         result, financials = _run("AAPL")
-        assert result.value_per_share == pytest.approx(120.2420, abs=0.01)
+        assert result.value_per_share == pytest.approx(109.5618, abs=0.01)
         assert financials.fx_rate_applied is None
         assert not financials.converted
 
@@ -102,7 +102,7 @@ class TestConversion:
         is right, and it is why the obvious "double the rate, double the value" check
         does not hold.
         """
-        expected = {"TSM": 100.7395, "SAP": 185.9567}[ticker]
+        expected = {"TSM": 93.8600, "SAP": 165.7224}[ticker]
         result, financials = _run(ticker, {"currency": {"fx_rate": rate}})
 
         assert financials.fx_rate_applied == pytest.approx(rate)

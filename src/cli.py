@@ -32,6 +32,7 @@ from src.dcf.reverse_dcf import ReverseDCFResult, solve_reverse_dcf
 from src.dcf.scenario_blender import blend_scenarios
 from src.dcf.sensitivity import football_field, wacc_vs_growth
 from src.excel.builder import build_excel_model
+from src.fetcher.rates import fetch_risk_free_rate
 from src.fetcher.snapshot import SAMPLE_TICKERS, peer_universe_tickers, snapshot_ticker
 from src.fetcher.yfinance_client import DEFAULT_OFFLINE_DIR, YFinanceClient
 from src.models.assumptions import DCFAssumptions, deep_merge
@@ -92,6 +93,23 @@ def _common(function):
         help="Value a bank, insurer or asset manager anyway. An unlevered DCF cannot "
         "describe one -- for a lender, financing IS the business.",
     )(function)
+    # The risk-free rate is a CAPM input, not company data, so it does not ride along
+    # with the statements fetch the way beta does. It has to be asked for explicitly,
+    # same as the FX rate above -- and for the same reason: the pinned config value
+    # keeps a valuation reproducible, and a silently time-varying default would break
+    # that guarantee for anyone re-running an old result.
+    function = click.option(
+        "--risk-free",
+        type=float,
+        default=None,
+        help="Risk-free rate as a decimal, e.g. 0.0495 for 4.95%.",
+    )(function)
+    function = click.option(
+        "--auto-risk-free",
+        is_flag=True,
+        help="Fetch the current 10-year Treasury yield from Yahoo instead of using the "
+        "pinned config value. Needs network.",
+    )(function)
     function = click.option(
         "--include-investments",
         is_flag=True,
@@ -125,6 +143,38 @@ def _currency_overrides(fx_rate: float | None, auto_fx: bool, force_sector: bool
     return out
 
 
+def _risk_free_override(
+    risk_free: float | None, auto_risk_free: bool, use_offline: bool
+) -> dict[str, Any]:
+    """Resolve --risk-free / --auto-risk-free into a wacc.risk_free_rate override.
+
+    Mirrors `_currency_overrides`: both flags set is a contradiction (supply a rate or
+    fetch one, not both), auto-fetching offline is a contradiction (there is no network
+    to fetch from), and neither flag leaves the pinned config value untouched.
+    """
+    if risk_free is not None and auto_risk_free:
+        raise click.ClickException(
+            "--risk-free and --auto-risk-free are both set. Supply a rate or fetch one."
+        )
+    if auto_risk_free:
+        if use_offline:
+            raise click.ClickException(
+                "--use-offline cannot fetch the risk-free rate. Supply a dated --risk-free "
+                "instead, or drop --auto-risk-free to use the pinned config value."
+            )
+        try:
+            rate = fetch_risk_free_rate()
+        except ValuationError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.secho(
+            f"Fetched risk-free rate: {rate:.3%} (10-year Treasury, live)", fg="yellow"
+        )
+        return {"wacc": {"risk_free_rate": rate}}
+    if risk_free is not None:
+        return {"wacc": {"risk_free_rate": risk_free}}
+    return {}
+
+
 def _shared_overrides(
     fx_rate: float | None,
     auto_fx: bool,
@@ -132,6 +182,9 @@ def _shared_overrides(
     include_investments: bool = False,
     value_driver: bool = False,
     fade_capex: bool = False,
+    risk_free: float | None = None,
+    auto_risk_free: bool = False,
+    use_offline: bool = False,
 ) -> dict[str, Any]:
     out = _currency_overrides(fx_rate, auto_fx, force_sector)
     if include_investments:
@@ -140,6 +193,9 @@ def _shared_overrides(
         out.setdefault("terminal", {})["terminal_fcf_mode"] = "value_driver"
     if fade_capex:
         out.setdefault("projection", {})["fade_capex_to_da"] = True
+    rf_override = _risk_free_override(risk_free, auto_risk_free, use_offline)
+    if rf_override:
+        out = deep_merge(out, rf_override)
     return out
 
 
@@ -192,6 +248,8 @@ def value(
     include_investments: bool,
     value_driver: bool,
     fade_capex: bool,
+    risk_free: float | None,
+    auto_risk_free: bool,
 ) -> None:
     """Value one company and build the Excel model."""
     ticker = ticker.upper().strip()
@@ -211,7 +269,15 @@ def value(
     overrides = deep_merge(
         overrides,
         _shared_overrides(
-            fx_rate, auto_fx, force_sector, include_investments, value_driver, fade_capex
+            fx_rate,
+            auto_fx,
+            force_sector,
+            include_investments,
+            value_driver,
+            fade_capex,
+            risk_free,
+            auto_risk_free,
+            use_offline,
         ),
     )
 
@@ -319,12 +385,22 @@ def scenarios(
     include_investments: bool,
     value_driver: bool,
     fade_capex: bool,
+    risk_free: float | None,
+    auto_risk_free: bool,
 ) -> None:
     """Run bear, base and bull side by side with probability weighting and margin of safety."""
     ticker = ticker.upper().strip()
     rows = []
     shared = _shared_overrides(
-        fx_rate, auto_fx, force_sector, include_investments, value_driver, fade_capex
+        fx_rate,
+        auto_fx,
+        force_sector,
+        include_investments,
+        value_driver,
+        fade_capex,
+        risk_free,
+        auto_risk_free,
+        use_offline,
     )
     try:
         # The statements are fetched once and shared across all three scenarios, so
@@ -446,11 +522,21 @@ def reverse(
     include_investments: bool,
     value_driver: bool,
     fade_capex: bool,
+    risk_free: float | None,
+    auto_risk_free: bool,
 ) -> None:
     """Reverse DCF: extract market-implied growth, margins, and terminal assumptions."""
     ticker = ticker.upper().strip()
     shared = _shared_overrides(
-        fx_rate, auto_fx, force_sector, include_investments, value_driver, fade_capex
+        fx_rate,
+        auto_fx,
+        force_sector,
+        include_investments,
+        value_driver,
+        fade_capex,
+        risk_free,
+        auto_risk_free,
+        use_offline,
     )
     try:
         assumptions = DCFAssumptions.from_yaml(
@@ -538,6 +624,18 @@ def reverse(
     is_flag=True,
     help="Linearly move CapEx toward the configured D&A ratio over the forecast horizon.",
 )
+@click.option(
+    "--risk-free",
+    type=float,
+    default=None,
+    help="Risk-free rate as a decimal, e.g. 0.0495 for 4.95%.",
+)
+@click.option(
+    "--auto-risk-free",
+    is_flag=True,
+    help="Fetch the current 10-year Treasury yield from Yahoo instead of using the "
+    "pinned config value. Needs network.",
+)
 def dashboard(
     tickers: str,
     use_offline: bool,
@@ -548,12 +646,18 @@ def dashboard(
     include_investments: bool,
     value_driver: bool,
     fade_capex: bool,
+    risk_free: float | None,
+    auto_risk_free: bool,
 ) -> None:
     """Generate multi-company valuation dashboard (terminal table + interactive HTML)."""
     t_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     click.secho(
         f"\nGenerating Valuation Dashboard for {len(t_list)} companies...", fg="cyan", bold=True
     )
+
+    # Resolved once, ahead of the per-ticker loop -- one dashboard run should use one
+    # rate for every company, not fetch (or fail fetching) 5 separate times.
+    rf_override = _risk_free_override(risk_free, auto_risk_free, use_offline)
 
     data_payload: dict[str, Any] = {}
     failed_tickers: dict[str, str] = {}
@@ -568,6 +672,7 @@ def dashboard(
                 shared.setdefault("terminal", {})["terminal_fcf_mode"] = "value_driver"
             if fade_capex:
                 shared.setdefault("projection", {})["fade_capex_to_da"] = True
+            shared = deep_merge(shared, rf_override)
 
             base_assump = DCFAssumptions.from_yaml(
                 config, scenario="base", overrides=_clean(shared) or None
