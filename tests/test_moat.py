@@ -78,9 +78,14 @@ def test_moat_analysis_value_destructive_trigger(aapl_financials):
 # ---------------------------------------------------------------------------
 
 
+# TSLA re-pinned 2026-09-18, 0.042427 -> 0.038104, when FIELD_MAP stopped preferring
+# Yahoo's adjusted operating-income row. NOPAT now runs off the 4,355m Tesla filed
+# rather than the 4,849m Yahoo had adjusted it to; invested capital is unchanged at
+# 90,290m, so the entire move is in the numerator. AAPL and MSFT do not move -- Yahoo's
+# two rows agree for both. See tests/test_ebit_definition.py.
 @pytest.mark.parametrize(
     "ticker,expected_roic",
-    [("AAPL", 0.609719), ("MSFT", 0.254075), ("TSLA", 0.042427)],
+    [("AAPL", 0.609719), ("MSFT", 0.254075), ("TSLA", 0.038104)],
 )
 def test_roic_is_pinned_not_merely_positive(ticker, expected_roic):
     """Kills the constant-ROIC mutant that the original assertions survived."""

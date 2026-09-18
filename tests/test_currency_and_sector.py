@@ -102,7 +102,7 @@ class TestConversion:
         is right, and it is why the obvious "double the rate, double the value" check
         does not hold.
         """
-        expected = {"TSM": 93.8600, "SAP": 165.7224}[ticker]
+        expected = {"TSM": 93.8597, "SAP": 165.6762}[ticker]
         result, financials = _run(ticker, {"currency": {"fx_rate": rate}})
 
         assert financials.fx_rate_applied == pytest.approx(rate)

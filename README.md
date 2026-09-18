@@ -211,7 +211,7 @@ Manifests contain generation time, code/data/configuration hashes, fiscal period
 
 ## Verification
 
-**359 tests, no network required.** Including a golden case worked out by hand so a
+**385 tests, no network required.** Including a golden case worked out by hand so a
 refactor cannot silently move the valuation:
 
 ```
@@ -320,7 +320,7 @@ Base case, SBC expensed, as of the committed fixtures:
 |---|---|---|---|---|---|
 | AAPL | $109.56 | $319.70 | −65.7% | 10.75% | 68.8% |
 | MSFT | $151.14 | $513.53 | −70.6% | 10.89% | 68.4% |
-| TSLA | $35.34  | $348.75 | −89.9% | 14.86% | 99.8% |
+| TSLA | $33.55  | $348.75 | −90.4% | 14.86% | 101.4% |
 
 **Read these as an illustration of the machinery, not as a recommendation.** The model is
 deliberately not calibrated to market prices, because reverse-engineering assumptions
@@ -383,6 +383,32 @@ audit's own fixes:
   though that were reported.
 
 These are pinned in `tests/test_second_audit_regressions.py`.
+
+**A later check against the filings themselves found the largest one yet.** Yahoo
+publishes two operating-profit rows that disagree with each other — an adjusted
+`Operating Income` and the filed `Total Operating Income As Reported` — and the model
+was reading the adjusted one. Reconciling against `us-gaap:OperatingIncomeLoss` on SEC
+EDGAR, the filed figure matched `As Reported` in **28 of 28** ticker-periods checked and
+the adjusted row in none. The two disagree in **75 of 152** fixture ticker-periods, and
+**18 of the 57 fixtures had an affected base year** — the year whose margin the forecast
+holds flat.
+
+```
+BA    FY2025   model read -5,416m   company filed  +4,281m     a sign flip
+INTC  FY2025   model read    -23m   company filed  -2,214m
+KO    FY2024   model read 14,022m   company filed   9,992m
+CRM   FY2023   model read  1,858m   company filed   1,030m
+```
+
+Boeing is the one that shows the cost: the model read a loss where the company filed a
+profit. **It survived four audits because Apple — the ticker every pinned number and the
+entire Excel cross-check is built on — is one of the companies where the two rows agree.**
+Exactly the shape of the earlier EBIT defect, and caught the same way: by comparing
+against a second independent source rather than by reasoning about the first one.
+
+Tesla moved from $35.34 to $33.55 on this; Apple and Microsoft did not move at all.
+Pinned in `tests/test_ebit_definition.py`, and the tool that found it is
+`tools/reconcile_edgar.py`.
 
 ---
 

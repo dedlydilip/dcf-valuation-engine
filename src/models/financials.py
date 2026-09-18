@@ -28,21 +28,39 @@ FIELD_MAP: dict[str, list[str]] = {
     "gross_profit": ["Gross Profit"],
     "sga": ["Selling General And Administration"],
     "rnd": ["Research And Development"],
-    "operating_income": ["Operating Income", "Total Operating Income As Reported"],
-    # Operating income FIRST. Yahoo's "EBIT" row is pretax income plus interest
-    # expense, which sweeps interest income, equity-method marks and every other
-    # non-operating item into what an unlevered DCF treats as operating profit --
-    # and then the cash generating that interest is added back whole in the equity
-    # bridge, so it is counted twice.
+    "operating_income": ["Total Operating Income As Reported", "Operating Income"],
+    # "Total Operating Income As Reported" FIRST, then Yahoo's adjusted "Operating
+    # Income", and only then its "EBIT". Two separate defects are being avoided here and
+    # they are easy to conflate, so both are spelled out.
     #
-    # On Amazon FY2025 the two differ by 24.5%: operating income 79,975 against an
-    # "EBIT" of 99,585, which is exactly pretax 97,311 + interest 2,274. FY2022 is
-    # starker still -- "EBIT" of -3,569 against operating income of +12,248, the
-    # Rivian writedown landing in an operating line.
+    # Yahoo's "EBIT" row is pretax income plus interest expense, which sweeps interest
+    # income, equity-method marks and every other non-operating item into what an
+    # unlevered DCF treats as operating profit -- and then the cash generating that
+    # interest is added back whole in the equity bridge, so it is counted twice. On
+    # Amazon FY2025 the two differ by 24.5%: operating income 79,975 against an "EBIT"
+    # of 99,585, exactly pretax 97,311 + interest 2,274. FY2022 is starker still --
+    # "EBIT" of -3,569 against operating income of +12,248, the Rivian writedown
+    # landing in an operating line. That is why "EBIT" is last.
     #
-    # This survived three audits because Apple is the one sample ticker where the two
-    # rows are identical (0.0% gap). MSFT differs by 8.9%, TSLA 15.8%, GOOGL 23.7%.
-    "ebit": ["Operating Income", "Total Operating Income As Reported", "EBIT"],
+    # The second defect is why the first two swapped, found by reconciling against the
+    # figures companies actually filed with the SEC (tools/reconcile_edgar.py). Yahoo
+    # publishes BOTH an adjusted "Operating Income" and the filed "Total Operating
+    # Income As Reported", and they disagree in 75 of 152 fixture ticker-periods. In
+    # 28 of 28 cases checked against EDGAR's `us-gaap:OperatingIncomeLoss`, the filed
+    # figure matched "As Reported" and never the adjusted row:
+    #
+    #     BA   FY2025   adjusted -5,416 against  4,281 as filed -- a sign flip
+    #     INTC FY2025   adjusted    -23 against -2,214 as filed
+    #     KO   FY2024   adjusted 14,022 against  9,992 as filed
+    #     CRM  FY2023   adjusted  1,858 against  1,030 as filed
+    #
+    # 18 of the 57 fixtures had an affected base year, which is the year whose margin
+    # the projector holds flat across the entire forecast. Boeing is the one that shows
+    # what was at stake: the model read a loss where the company filed a profit.
+    #
+    # This survived four audits because Apple -- the ticker every pinned number and the
+    # whole Excel cross-check is built on -- is one of the cases where the rows agree.
+    "ebit": ["Total Operating Income As Reported", "Operating Income", "EBIT"],
     "ebitda": ["EBITDA", "Normalized EBITDA"],
     "interest_expense": ["Interest Expense", "Interest Expense Non Operating"],
     "pretax_income": ["Pretax Income"],

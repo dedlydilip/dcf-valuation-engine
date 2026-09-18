@@ -3,6 +3,46 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## The EBIT row, again — September 2026
+
+An earlier round established that Yahoo's `EBIT` row is pretax plus interest and moved
+`FIELD_MAP` to prefer `Operating Income`. That was the right direction and the wrong
+destination. Yahoo publishes **two** operating-profit rows, and the one the model
+switched to is Yahoo's own adjusted figure rather than what the company filed.
+
+Found by reconciling against `us-gaap:OperatingIncomeLoss` on SEC EDGAR — the number in
+the filing itself. In **28 of 28** ticker-periods checked, the filed figure matched
+`Total Operating Income As Reported` and the adjusted `Operating Income` in none. The two
+rows disagree in **75 of 152** fixture ticker-periods, and **18 of the 57 fixtures had an
+affected base year** — the year whose margin the projector holds flat across the whole
+forecast.
+
+```
+BA    FY2025   model read -5,416m   company filed  +4,281m    a sign flip
+INTC  FY2025   model read    -23m   company filed  -2,214m
+ABBV  FY2025   model read 20,091m   company filed  15,075m
+KO    FY2024   model read 14,022m   company filed   9,992m
+CRM   FY2023   model read  1,858m   company filed   1,030m
+```
+
+Boeing is the one that matters: the model read a loss where the company filed a profit,
+and then forecast five years forward from it.
+
+`FIELD_MAP["ebit"]` and `["operating_income"]` now put the as-filed row first, keeping
+the adjusted row as a fallback for periods where Yahoo carries only that one. The alias
+warning in `DCFEngine.run` was inverted by the same change and has been reversed with it:
+it treated the adjusted row as the safe case, so left alone it would have gone quiet for
+the input that needs checking and shouted about the one that does not.
+
+Headline movement is confined to Tesla, $35.34 -> $33.55, and its ROIC pin, 0.042427 ->
+0.038104. **Apple and Microsoft do not move at all** — both are companies where Yahoo's
+two rows agree, which is why this survived four audits: every pinned number and the whole
+Excel cross-check is anchored on Apple.
+
+Verified after the fix: 385 tests passing, `ruff` clean, native Excel cross-check still
+324/324 at 0.000%, fixture sweep still 48 valuations / 9 refusals / 0 errors. Pinned in
+`tests/test_ebit_definition.py`; the tool that found it is `tools/reconcile_edgar.py`.
+
 ## Risk-free rate: stale by 75 basis points, and no way to check — September 2026
 
 `config/assumptions.yaml` pinned `risk_free_rate: 0.042` for reproducibility, the same

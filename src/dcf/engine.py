@@ -230,10 +230,19 @@ class DCFEngine:
             getattr(self.financials, "provenance", {}).get("source_aliases", {}).get("ebit", {})
         )
         if aliases:
+            # The trusted row is the one the company filed. This check used to treat
+            # Yahoo's adjusted "Operating Income" as the safe case and warn about
+            # everything else, which pointed the warning at the wrong row: reconciling
+            # against EDGAR showed the adjusted figure disagrees with the filing in 75
+            # of 152 fixture ticker-periods while "As Reported" matched it in 28 of 28.
+            # Left as it was, the warning would have gone quiet for exactly the input
+            # that needs checking and shouted about the one that does not.
             latest_alias = next(reversed(aliases.values()))
-            if latest_alias.lower() != "operating income":
+            if latest_alias.lower() != "total operating income as reported":
                 result.warnings.append(
-                    f"EBIT uses provider alias '{latest_alias}'; reconcile its operating/non-operating definition with the filing before relying on the margin."
+                    f"EBIT uses provider alias '{latest_alias}' rather than the as-filed "
+                    f"'Total Operating Income As Reported'; reconcile its operating/non-operating "
+                    f"definition with the filing before relying on the margin."
                 )
         if self.assumptions.projection.margin_basis == "after_sbc":
             result.warnings.append(

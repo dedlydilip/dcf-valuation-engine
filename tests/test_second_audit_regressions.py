@@ -295,9 +295,16 @@ class TestBridgeInputsAreSourced:
         Re-pinned 2026-09-18 when the risk-free rate moved from a stale 4.20% to the
         actual 10-year Treasury yield of 4.947% -- see config/assumptions.yaml and
         src/fetcher/rates.py. Every value here moved; none of the underlying logic did.
+
+        TSLA re-pinned again the same day, 27.9500 -> 26.5185, when FIELD_MAP stopped
+        preferring Yahoo's adjusted "Operating Income" row over the filed "Total
+        Operating Income As Reported". Tesla's FY2025 operating profit is 4,355m as
+        filed against the 4,849m the model had been reading. AAPL and MSFT do not move,
+        because both are companies where Yahoo's two rows agree -- which is exactly why
+        the defect stayed invisible. See tests/test_ebit_definition.py.
         """
         warnings.simplefilter("ignore")
-        expected = {"AAPL": 109.5618, "MSFT": 151.1414, "TSLA": 27.9500}
+        expected = {"AAPL": 109.5618, "MSFT": 151.1414, "TSLA": 26.5185}
         for ticker, value in expected.items():
             financials = YFinanceClient(ticker, offline_mode=True).get_financials()
             result = DCFEngine(financials, DCFAssumptions.from_yaml(), ticker=ticker).run()
