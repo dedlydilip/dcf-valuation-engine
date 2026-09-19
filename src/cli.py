@@ -110,6 +110,20 @@ def _common(function):
         help="Fetch the current 10-year Treasury yield from Yahoo instead of using the "
         "pinned config value. Needs network.",
     )(function)
+    # A discount rate is denominated in a currency, and saying which one is what lets
+    # the quality gate notice when it disagrees with the cash flows.
+    function = click.option(
+        "--rate-currency",
+        default=None,
+        help="Currency the risk-free rate and ERP are quoted in (default USD). Pair it "
+        "with --risk-free when valuing a company that reports in another currency.",
+    )(function)
+    function = click.option(
+        "--allow-rate-currency-mismatch",
+        is_flag=True,
+        help="Discount cash flows at a rate denominated in another currency anyway. "
+        "The honest fix is a local --risk-free plus --rate-currency.",
+    )(function)
     function = click.option(
         "--include-investments",
         is_flag=True,
@@ -185,6 +199,8 @@ def _shared_overrides(
     risk_free: float | None = None,
     auto_risk_free: bool = False,
     use_offline: bool = False,
+    rate_currency: str | None = None,
+    allow_rate_currency_mismatch: bool = False,
 ) -> dict[str, Any]:
     out = _currency_overrides(fx_rate, auto_fx, force_sector)
     if include_investments:
@@ -193,6 +209,10 @@ def _shared_overrides(
         out.setdefault("terminal", {})["terminal_fcf_mode"] = "value_driver"
     if fade_capex:
         out.setdefault("projection", {})["fade_capex_to_da"] = True
+    if rate_currency:
+        out.setdefault("wacc", {})["assumption_currency"] = rate_currency.upper()
+    if allow_rate_currency_mismatch:
+        out.setdefault("quality", {})["allow_rate_currency_mismatch"] = True
     rf_override = _risk_free_override(risk_free, auto_risk_free, use_offline)
     if rf_override:
         out = deep_merge(out, rf_override)
@@ -250,6 +270,8 @@ def value(
     fade_capex: bool,
     risk_free: float | None,
     auto_risk_free: bool,
+    rate_currency: str | None,
+    allow_rate_currency_mismatch: bool,
 ) -> None:
     """Value one company and build the Excel model."""
     ticker = ticker.upper().strip()
@@ -278,6 +300,8 @@ def value(
             risk_free,
             auto_risk_free,
             use_offline,
+            rate_currency,
+            allow_rate_currency_mismatch,
         ),
     )
 
@@ -387,6 +411,8 @@ def scenarios(
     fade_capex: bool,
     risk_free: float | None,
     auto_risk_free: bool,
+    rate_currency: str | None,
+    allow_rate_currency_mismatch: bool,
 ) -> None:
     """Run bear, base and bull side by side with probability weighting and margin of safety."""
     ticker = ticker.upper().strip()
@@ -401,6 +427,8 @@ def scenarios(
         risk_free,
         auto_risk_free,
         use_offline,
+        rate_currency,
+        allow_rate_currency_mismatch,
     )
     try:
         # The statements are fetched once and shared across all three scenarios, so
@@ -524,6 +552,8 @@ def reverse(
     fade_capex: bool,
     risk_free: float | None,
     auto_risk_free: bool,
+    rate_currency: str | None,
+    allow_rate_currency_mismatch: bool,
 ) -> None:
     """Reverse DCF: extract market-implied growth, margins, and terminal assumptions."""
     ticker = ticker.upper().strip()
@@ -537,6 +567,8 @@ def reverse(
         risk_free,
         auto_risk_free,
         use_offline,
+        rate_currency,
+        allow_rate_currency_mismatch,
     )
     try:
         assumptions = DCFAssumptions.from_yaml(
@@ -648,6 +680,8 @@ def dashboard(
     fade_capex: bool,
     risk_free: float | None,
     auto_risk_free: bool,
+    rate_currency: str | None,
+    allow_rate_currency_mismatch: bool,
 ) -> None:
     """Generate multi-company valuation dashboard (terminal table + interactive HTML)."""
     t_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]

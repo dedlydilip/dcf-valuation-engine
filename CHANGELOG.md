@@ -3,6 +3,38 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## The discount rate has a currency too — September 2026
+
+Found by valuing Samsung and SK Hynix. Both report and trade in won, so the
+statement-versus-quote check passes cleanly, and both were then discounted at a WACC
+built from a US Treasury yield and a US equity risk premium. Nothing warned, because
+nothing recorded what currency the rates were in.
+
+This is the more dangerous of the two currency defects. Toyota's was loud -- $79,467 per
+share against a $198 quote, which is why the ADR guard exists. This one produces an
+output where every figure looks reasonable and the units are internally consistent
+everywhere except the discount rate. **Worth 13.5% on Samsung**: at Korea's ~3.2%
+ten-year rather than the US 5.0%, WACC falls 13.33% -> 11.55% and value per share rises
+from 44,928 to 50,970 won.
+
+`wacc.assumption_currency` (default `USD`) records what the rates are denominated in, and
+`_check_rate_currency_coherence` refuses when it disagrees with the statements. Three ways
+out, all named in the refusal: supply a local rate and declare it (`--risk-free` with
+`--rate-currency`), convert the statements (`--fx-rate` / `--auto-fx`, which rewrites the
+statement currency so a converted ADR passes on its own), or accept it explicitly
+(`quality.allow_rate_currency_mismatch`).
+
+`currency.allow_mismatch` downgrades the refusal to a warning rather than silencing it.
+That flag is a claim about statements against price; whoever set it may never have
+considered the rates, so the fact survives even when the refusal does not.
+
+No committed fixture changes behaviour: the sweep is unchanged at 48 valuations and 9
+refusals, and the three tickers that cite this guard -- ASML, SAP and TSM -- were already
+refusing on the ADR check. It only fires on companies that report and trade in one
+non-USD currency, which is precisely the case nothing covered.
+
+Verified: 425 tests passing, `ruff` clean, four mutations of the guard all caught.
+
 ## SEC EDGAR as a second statement source — September 2026
 
 Thirteen tickers run in one sitting made the case that the weak link is the input data

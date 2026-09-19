@@ -20,6 +20,13 @@ wacc:
   # the current yield live (needs network; see src/fetcher/rates.py).
   risk_free_rate: 0.04947
   equity_risk_premium: 0.055
+  # Currency the two rates above are denominated in. The quality gate refuses when the
+  # statements are in a different one, because a USD discount rate prices USD risk --
+  # applying it to KRW or JPY cash flows misstates the rate by the spread between the
+  # two government curves. Samsung and SK Hynix report AND trade in won, so the
+  # statement-versus-quote check passes and this was the only thing standing between a
+  # US Treasury yield and a Korean valuation. Worth 13.5% on Samsung.
+  assumption_currency: USD
   beta_override: null          # null => fetch from yfinance
   cost_of_debt_override: null  # null => interest expense / average total debt
   size_premium: 0.0

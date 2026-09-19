@@ -97,6 +97,10 @@ class Projector:
                 # on its own -- only an explicit opt-out has to be carried in.
                 currency_reconciled=self.assumptions.currency.allow_mismatch,
                 allow_unsuitable_sector=self.assumptions.quality.allow_unsuitable_sector,
+                assumption_currency=self.assumptions.wacc.assumption_currency,
+                allow_rate_currency_mismatch=(
+                    self.assumptions.quality.allow_rate_currency_mismatch
+                ),
             )
         else:
             self.quality = QualityReport()

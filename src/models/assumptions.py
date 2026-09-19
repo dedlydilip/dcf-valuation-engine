@@ -119,6 +119,16 @@ class ProjectionAssumptions(_Base):
 class WACCAssumptions(_Base):
     risk_free_rate: float = Field(0.042, ge=0.0, le=0.25)
     equity_risk_premium: float = Field(0.055, gt=0.0, le=0.20)
+    # Which currency `risk_free_rate` and `equity_risk_premium` are denominated in.
+    #
+    # It exists to make an assumption explicit that used to be silent. The shipped
+    # values are a US Treasury yield and a US equity risk premium, and discounting
+    # won-denominated cash flows at them is incoherent -- but nothing said so, because
+    # nothing recorded what currency the rates were in. Samsung and SK Hynix report and
+    # trade in KRW, so the statement/quote coherence check passes and the USD discount
+    # rate goes in unremarked. Declaring the currency lets the quality gate compare it
+    # against the statements.
+    assumption_currency: str = Field("USD", min_length=3, max_length=3)
     beta_override: float | None = Field(None, ge=-5.0, le=10.0)
     discount_rate_override: float | None = Field(None, gt=0.0, le=1.0)
     cost_of_debt_override: float | None = Field(None, ge=0.0, le=0.50)
@@ -304,6 +314,11 @@ class QualityAssumptions(_Base):
     # cash flow treats financing as outside the operating business, which is exactly
     # backwards for a lender or an underwriter -- for them financing IS the business.
     allow_unsuitable_sector: bool = False
+    # Discount cash flows at a rate denominated in a different currency anyway. The
+    # honest fix is to supply a local risk-free rate and ERP and declare them via
+    # wacc.assumption_currency; this is the escape hatch for someone who has decided
+    # the mismatch is acceptable for their purpose.
+    allow_rate_currency_mismatch: bool = False
 
 
 class DCFAssumptions(_Base):

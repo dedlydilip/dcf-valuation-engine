@@ -24,7 +24,7 @@ import pytest
 from src.dcf.engine import DCFEngine
 from src.fetcher.fx import MONETARY_FIELDS, NON_MONETARY_FIELDS, convert_statements
 from src.fetcher.yfinance_client import YFinanceClient
-from src.models.assumptions import CurrencyAssumptions, DCFAssumptions
+from src.models.assumptions import CurrencyAssumptions, DCFAssumptions, deep_merge
 from src.models.errors import DataQualityError
 from src.models.financials import (
     FIELD_MAP,
@@ -237,6 +237,140 @@ class TestCompsExcludeMismatchedPeers:
             revenue=1000.0, info={"financialCurrency": "EUR", "currency": "USD"}
         )
         assert _currency_mismatch(incoherent) is not None
+
+
+class TestRateCurrencyCoherence:
+    """The discount rate is denominated too, and nothing used to check it.
+
+    `TestCurrencyMismatchIsRefused` above catches statements and quote disagreeing --
+    every ADR. This catches the case where those two agree and the *assumptions* are the
+    odd one out, which is quieter because nothing in the output looks wrong at all:
+
+        Samsung    KRW statements, KRW quote, USD risk-free rate -> no warning
+        SK Hynix   KRW statements, KRW quote, USD risk-free rate -> no warning
+
+    On Samsung the error is worth 13.5% of the answer. Discounting at Korea's ~3.2%
+    ten-year rather than the US 5.0% moves WACC from 13.33% to 11.55% and value per
+    share from 44,928 to 50,970 won.
+    """
+
+    @staticmethod
+    def _korean(**overrides):
+        """A company reporting and trading in one non-USD currency -- no ADR mismatch."""
+        return make_financials(
+            revenue=[1000.0, 1100.0],
+            ebit=[200.0, 220.0],
+            da=[50.0, 55.0],
+            capex=[50.0, 55.0],
+            current_assets=[100.0, 100.0],
+            current_liabilities=[100.0, 100.0],
+            diluted_shares=[100.0, 100.0],
+            info={
+                "financialCurrency": "KRW",
+                "currency": "KRW",
+                "marketCap": 2000.0,
+                "currentPrice": 20.0,
+                "sharesOutstanding": 100,
+                **overrides,
+            },
+        )
+
+    def _value(self, financials, overrides: dict | None = None):
+        warnings.simplefilter("ignore")
+        base = {"wacc": {"beta_override": 1.0}}
+        assumptions = DCFAssumptions.model_validate(deep_merge(base, overrides or {}))
+        return DCFEngine(financials, assumptions, ticker="KR").run()
+
+    def test_a_usd_rate_against_non_usd_statements_is_refused(self):
+        with pytest.raises(DataQualityError) as exc:
+            self._value(self._korean())
+        message = str(exc.value)
+        assert "KRW" in message and "USD" in message, (
+            "the refusal must name both currencies -- the reader cannot act on it otherwise"
+        )
+
+    def test_the_message_names_every_way_out(self):
+        with pytest.raises(DataQualityError) as exc:
+            self._value(self._korean())
+        message = str(exc.value)
+        assert "--risk-free" in message
+        assert "--rate-currency" in message
+        assert "--auto-fx" in message
+        assert "allow_rate_currency_mismatch" in message
+
+    def test_declaring_the_rate_currency_lets_it_through(self):
+        """The honest fix: supply a local rate and say what currency it is in."""
+        result = self._value(
+            self._korean(),
+            {"wacc": {"risk_free_rate": 0.032, "assumption_currency": "KRW"}},
+        )
+        assert result.value_per_share > 0
+
+    def test_the_explicit_override_lets_it_through(self):
+        result = self._value(
+            self._korean(), {"quality": {"allow_rate_currency_mismatch": True}}
+        )
+        assert result.value_per_share > 0
+
+    def test_a_us_company_is_untouched(self):
+        """The whole point: invisible to every domestic USD ticker."""
+        result, _ = _run("AAPL")
+        assert result.value_per_share == pytest.approx(109.5618, abs=0.01)
+
+    def test_a_converted_adr_passes_because_conversion_rewrites_the_currency(self):
+        """SAP converted to USD is USD cash flows against a USD rate -- coherent."""
+        result, financials = _run("SAP", {"currency": {"fx_rate": 1.159017}})
+        assert financials.currency == "USD"
+        assert result.value_per_share > 0
+
+    def test_allow_mismatch_downgrades_the_refusal_to_a_warning(self):
+        """`allow_mismatch` is the caller saying they reconciled the units themselves.
+
+        Taken at face value, but not silently: the claim is about statements against
+        price and may never have considered the rates.
+
+        Asserted on the report rather than through `pytest.warns`, because the `_run`
+        helper above sets `simplefilter("ignore")` and would swallow it.
+        """
+        from src.models.quality_gate import DataQualityGate
+
+        assumptions = DCFAssumptions.from_yaml(
+            overrides={"currency": {"allow_mismatch": True}}
+        )
+        financials = YFinanceClient("SAP", offline_mode=True).get_financials(
+            currency=assumptions.currency
+        )
+        report = DataQualityGate(
+            financials, currency_reconciled=True, assumption_currency="USD"
+        ).validate(raise_on_critical=False)
+
+        assert not report.critical, "allow_mismatch must downgrade, not refuse"
+        assert any("denominated in the wrong currency" in w for w in report.warnings), (
+            "suppressing the refusal must not suppress the fact"
+        )
+
+    def test_allow_mismatch_stays_quiet_when_the_currencies_agree(self):
+        """No warning for a USD company, even with the escape hatch set."""
+        from src.models.quality_gate import DataQualityGate
+
+        financials = YFinanceClient("AAPL", offline_mode=True).get_financials()
+        report = DataQualityGate(
+            financials, currency_reconciled=True, assumption_currency="USD"
+        ).validate(raise_on_critical=False)
+        assert not any("denominated in the wrong currency" in w for w in report.warnings)
+
+    def test_an_unknown_statement_currency_does_not_block(self):
+        """Absence is not evidence of a mismatch; there is already a warning for it."""
+        financials = self._korean()
+        financials.info.pop("financialCurrency")
+        financials.currency = ""
+        assert self._value(financials).value_per_share != 0
+
+    def test_the_declared_currency_is_compared_case_insensitively(self):
+        result = self._value(
+            self._korean(), {"wacc": {"assumption_currency": "krw"}}
+        )
+        assert result.value_per_share > 0
 
 
 class TestSectorSuitability:

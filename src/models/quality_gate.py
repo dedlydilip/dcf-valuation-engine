@@ -86,6 +86,8 @@ class DataQualityGate:
         max_sbc_pct_revenue: float = 0.60,
         currency_reconciled: bool = False,
         allow_unsuitable_sector: bool = False,
+        assumption_currency: str = "USD",
+        allow_rate_currency_mismatch: bool = False,
     ) -> None:
         self.financials = financials
         self.min_history_years = min_history_years
@@ -95,6 +97,10 @@ class DataQualityGate:
         # anything itself; it only refuses to proceed on incoherent units.
         self.currency_reconciled = currency_reconciled
         self.allow_unsuitable_sector = allow_unsuitable_sector
+        # The currency the risk-free rate and equity risk premium are quoted in, so the
+        # gate can compare them against the statements rather than assuming they agree.
+        self.assumption_currency = (assumption_currency or "USD").upper()
+        self.allow_rate_currency_mismatch = allow_rate_currency_mismatch
         self.report = QualityReport()
 
     # ------------------------------------------------------------------ helpers
@@ -158,6 +164,7 @@ class DataQualityGate:
             )
 
         self._check_currency_coherence()
+        self._check_rate_currency_coherence()
         self._check_sector_suitability()
         self._check_period_vintage()
         self._check_warnings()
@@ -247,6 +254,62 @@ class DataQualityGate:
             f"and a WACC weighing a {price} market cap against {statement} debt. Supply "
             f"--fx-rate, or use --auto-fx to fetch the spot rate, or set "
             f"currency.allow_mismatch if you have already reconciled the units yourself."
+        )
+
+    def _check_rate_currency_coherence(self) -> None:
+        """Refuse a discount rate denominated in a different currency to the cash flows.
+
+        The check above catches statements and quote disagreeing. This one catches the
+        case where they agree and the *assumptions* are the odd one out, which is the
+        quieter failure of the two because nothing looks wrong:
+
+            Samsung    KRW statements, KRW quote, USD risk-free rate -> no warning at all
+            SK Hynix   KRW statements, KRW quote, USD risk-free rate -> no warning at all
+
+        A US Treasury yield and a US equity risk premium describe the return a dollar
+        investor requires for dollar risk. Applying them to won cash flows prices Korean
+        risk at American rates, and the error runs in whichever direction the two
+        government curves happen to differ -- hundreds of basis points on the discount
+        rate, compounded over the forecast and capitalised into the terminal value.
+
+        The ADR guard exists because Toyota's mismatch was loud: $79,467 per share
+        against a $198 quote. This one is dangerous for the opposite reason. Nothing in
+        the output looks unreasonable; the units are internally consistent everywhere
+        except the one place nobody was looking.
+
+        Converting the statements resolves it the same way it resolves the ADR case:
+        conversion rewrites the statement currency to the price currency, so a converted
+        ADR reaches here already matching a USD assumption.
+        """
+        if self.currency_reconciled:
+            # `currency.allow_mismatch` is the caller stating they have reconciled the
+            # units themselves. Taking that at face value, but not silently -- the claim
+            # is about statements against price, and may not have considered the rates.
+            statement = statement_currency(self.financials)
+            if statement and statement != self.assumption_currency:
+                self.report.warnings.append(
+                    f"Statements are in {statement} while the risk-free rate and equity "
+                    f"risk premium are {self.assumption_currency} assumptions. "
+                    f"currency.allow_mismatch suppresses the refusal; the discount rate "
+                    f"is still denominated in the wrong currency for these cash flows."
+                )
+            return
+        if self.allow_rate_currency_mismatch:
+            return
+
+        statement = statement_currency(self.financials)
+        if not statement or statement == self.assumption_currency:
+            return
+
+        self.report.critical.append(
+            f"CRITICAL: the statements are reported in {statement} but the risk-free rate "
+            f"and equity risk premium are {self.assumption_currency} assumptions. A "
+            f"{self.assumption_currency} discount rate prices "
+            f"{self.assumption_currency} risk, so applying it to {statement} cash flows "
+            f"misstates the discount rate by the spread between the two government "
+            f"curves. Supply a {statement} risk-free rate with --risk-free and declare it "
+            f"with --rate-currency {statement}, or convert the statements with --fx-rate "
+            f"or --auto-fx, or set quality.allow_rate_currency_mismatch to value it anyway."
         )
 
     def _check_sector_suitability(self) -> None:
@@ -365,6 +428,8 @@ def run_quality_gate(
     emit: bool = True,
     currency_reconciled: bool = False,
     allow_unsuitable_sector: bool = False,
+    assumption_currency: str = "USD",
+    allow_rate_currency_mismatch: bool = False,
 ) -> QualityReport:
     """Convenience wrapper: validate, emit warnings, return the report."""
     gate = DataQualityGate(
@@ -373,6 +438,8 @@ def run_quality_gate(
         max_sbc_pct_revenue,
         currency_reconciled=currency_reconciled,
         allow_unsuitable_sector=allow_unsuitable_sector,
+        assumption_currency=assumption_currency,
+        allow_rate_currency_mismatch=allow_rate_currency_mismatch,
     )
     report = gate.validate()
     if emit:

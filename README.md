@@ -211,7 +211,7 @@ Manifests contain generation time, code/data/configuration hashes, fiscal period
 
 ## Verification
 
-**415 tests, no network required.** Including a golden case worked out by hand so a
+**425 tests, no network required.** Including a golden case worked out by hand so a
 refactor cannot silently move the valuation:
 
 ```
@@ -498,6 +498,44 @@ there is expected, not a bug. `src/fetcher/rates.py` fetches `^TNX` (the 10-year
 yield) exactly the way `src/fetcher/fx.py` fetches a spot rate, and is silent about
 anything but the risk-free assumption — cost of debt, ERP and every other WACC input are
 untouched.
+
+### The discount rate is denominated too
+
+The guard above catches statements and quote disagreeing — every ADR. It cannot catch
+the case where those two agree and the *assumptions* are the odd one out:
+
+```
+Samsung    KRW statements, KRW quote, USD risk-free rate   -> no warning at all
+SK Hynix   KRW statements, KRW quote, USD risk-free rate   -> no warning at all
+```
+
+A US Treasury yield and a US equity risk premium describe what a dollar investor
+requires for dollar risk. Applied to won cash flows they price Korean risk at American
+rates, and the error runs in whichever direction the two government curves differ. **On
+Samsung it is worth 13.5% of the answer** — at Korea's ~3.2% ten-year rather than the US
+5.0%, WACC falls from 13.33% to 11.55% and value per share rises from ₩44,928 to ₩50,970.
+
+This is the more dangerous of the two currency defects, for the opposite reason to
+Toyota's. Toyota's was loud: $79,467 per share against a $198 quote. Here nothing in the
+output looks unreasonable. The units are internally consistent everywhere except the one
+place nobody was looking, and the model said nothing.
+
+`wacc.assumption_currency` now records what currency the rates are in, so the gate can
+compare it against the statements and refuse:
+
+```bash
+python run.py value --ticker 005930.KS --risk-free 0.032 --rate-currency KRW
+python run.py value --ticker 005930.KS --auto-fx                 # or convert to USD
+python run.py value --ticker 005930.KS --allow-rate-currency-mismatch   # or accept it
+```
+
+`currency.allow_mismatch` downgrades the refusal to a warning rather than silencing it:
+that flag is a claim about statements against price, and whoever set it may never have
+considered the rates.
+
+Every committed fixture is unaffected — the sweep is unchanged at 48 valuations and 9
+refusals, and the three tickers that cite this guard (ASML, SAP, TSM) were already
+refusing on the ADR check.
 
 ### Statements can come from the filings instead of from Yahoo
 
