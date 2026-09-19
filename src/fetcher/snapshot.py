@@ -12,6 +12,7 @@ import importlib.metadata
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from src.fetcher.yfinance_client import (
     DEFAULT_OFFLINE_DIR,
@@ -42,14 +43,32 @@ def peer_universe_tickers() -> tuple[str, ...]:
     return peer_universe()
 
 
-def snapshot_ticker(ticker: str, out_dir: Path | str = DEFAULT_OFFLINE_DIR) -> Path:
-    """Fetch one ticker live and write its fixture set. Returns the directory written."""
+def snapshot_ticker(
+    ticker: str, out_dir: Path | str = DEFAULT_OFFLINE_DIR, source: str = "yahoo"
+) -> Path:
+    """Fetch one ticker live and write its fixture set. Returns the directory written.
+
+    `source="edgar"` takes the three statements from the company's own SEC filings and
+    leaves `info.json` on Yahoo, because EDGAR carries no market data at all -- no price,
+    no market capitalisation, no beta. It is a hybrid by necessity rather than by choice,
+    and the manifest records which half came from where.
+    """
     ticker = ticker.upper().strip()
     target = Path(out_dir) / ticker
     target.mkdir(parents=True, exist_ok=True)
 
     client = YFinanceClient(ticker, offline_mode=False)
     raw = client._fetch_live_raw()
+
+    edgar_meta: dict[str, Any] | None = None
+    if source == "edgar":
+        # Imported here rather than at module scope so the EDGAR path costs nothing --
+        # not even an import -- for the default Yahoo snapshot.
+        from src.fetcher.edgar import fetch_edgar_statements
+
+        frames, edgar_meta = fetch_edgar_statements(ticker)
+        raw = {**raw, "income": frames["income"], "balance": frames["balance"],
+               "cashflow": frames["cashflow"]}
 
     write_statement_json(raw["income"], target / STATEMENT_FILES["income"])
     write_statement_json(raw["balance"], target / STATEMENT_FILES["balance"])
@@ -75,11 +94,27 @@ def snapshot_ticker(ticker: str, out_dir: Path | str = DEFAULT_OFFLINE_DIR) -> P
         sha256=files,
         market_timestamp=raw.get("info", {}).get("regularMarketTime"),
     )
+    if edgar_meta is not None:
+        manifest["provider"] = "edgar+yfinance"
+        manifest["statements_provider"] = "sec-edgar"
+        manifest["info_provider"] = "yfinance"
+        # Which XBRL tag supplied each canonical field, the taxonomy chosen, and the
+        # accession the facts came from: enough to re-derive any number by hand.
+        manifest["edgar"] = {
+            "cik": f"{edgar_meta['cik']:010d}",
+            "entity_name": edgar_meta.get("entity_name"),
+            "taxonomy": edgar_meta["taxonomy"],
+            "latest_accession": edgar_meta.get("latest_accession"),
+            "tags": edgar_meta.get("tags", {}),
+            "entity_shares_outstanding": edgar_meta.get("entity_shares_outstanding"),
+        }
     (target / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return target
 
 
 def snapshot_all(
-    tickers: tuple[str, ...] = SAMPLE_TICKERS, out_dir: Path | str = DEFAULT_OFFLINE_DIR
+    tickers: tuple[str, ...] = SAMPLE_TICKERS,
+    out_dir: Path | str = DEFAULT_OFFLINE_DIR,
+    source: str = "yahoo",
 ) -> list[Path]:
-    return [snapshot_ticker(t, out_dir) for t in tickers]
+    return [snapshot_ticker(t, out_dir, source) for t in tickers]

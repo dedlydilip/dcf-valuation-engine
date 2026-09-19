@@ -3,6 +3,51 @@
 Dated by the audit that prompted each round rather than by release, because there have
 been no releases. Every entry names what moved and by how much.
 
+## SEC EDGAR as a second statement source — September 2026
+
+Thirteen tickers run in one sitting made the case that the weak link is the input data
+rather than the valuation maths: a beta of 0.10 for Lockheed Martin, a 0.50% cost of debt
+for Toyota (below the risk-free rate), a 91.4% share-count basis mismatch on PetroChina.
+`yfinance` is an unofficial scrape of Yahoo's aggregated figures, and aggregation is
+where the EBIT defect above came from.
+
+`--source edgar` on the `snapshot` command takes the three statements from the company's
+own 10-K or 20-F XBRL facts. `info.json` stays on Yahoo, because EDGAR carries no market
+data whatsoever, and the flag is named for where the statements come from rather than
+pretending to be a full replacement. Output is the existing fixture format, so the engine,
+the comps module, the Excel builder and every test consume it unchanged.
+
+Four traps, each found against the live API, each capable of producing a plausible number
+rather than an error, and each now pinned by a test that was mutation-checked:
+
+- **Foreign filers carry both taxonomies and the US GAAP one is frozen.** Honda's
+  `us-gaap:OperatingIncomeLoss` stops at 2014-03-31, Toyota's at 2020-03-31; both moved to
+  IFRS. Selecting by recency rather than preference is what stops a mapper returning
+  twelve-year-old figures.
+- **Every period appears several times**, once per filing that restates it as a
+  comparative. Latest-filed wins.
+- **`total_debt` has no single US GAAP tag** — Apple's composes from three, and absent
+  components must stay absent rather than summing to a zero that reads as debt-free.
+- **Filers migrate between tags.** P&G stopped tagging
+  `CashAndCashEquivalentsAtCarryingValue`; taking the first candidate with any data
+  returned an earlier year's cash as current, 4,239m against 9,942m. Candidates merge per
+  period now, the same `combine_first` semantics the Yahoo normalizer already used.
+
+`tools/reconcile_edgar.py` compares the two providers field by field. Apple reconciles to
+0.00% across four fiscal years and twelve fields. Two differences are reported rather than
+absorbed: Yahoo's `total_debt` includes capitalised leases in FY2022 and excludes them in
+FY2023-25 — its own series is inconsistent — and EDGAR lags Yahoo for foreign filers.
+
+This tool is what found the EBIT defect in the entry below.
+
+Not fixed by any of it, and stated plainly: cost of debt and beta are not in XBRL, and
+coverage stops at SEC registrants — Tencent and SK Hynix trade as unsponsored depositary
+receipts and file nothing, so the CIK lookup refuses by name.
+
+Verified: 415 tests passing, `ruff` clean, committed fixtures byte-identical, and a PG
+fixture snapshotted through EDGAR values within 1.3% of the Yahoo-sourced run, the whole
+gap traced to the documented lease difference in `total_debt`.
+
 ## The EBIT row, again — September 2026
 
 An earlier round established that Yahoo's `EBIT` row is pretax plus interest and moved

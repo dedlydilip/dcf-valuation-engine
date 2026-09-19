@@ -841,6 +841,15 @@ def dashboard(
 @click.option(
     "--offline-dir", default=str(DEFAULT_OFFLINE_DIR), type=click.Path(), show_default=True
 )
+@click.option(
+    "--source",
+    type=click.Choice(["yahoo", "edgar"]),
+    default="yahoo",
+    show_default=True,
+    help="Where the STATEMENTS come from. 'edgar' reads the company's own SEC filings "
+    "(10-K/20-F XBRL facts); the info payload stays on Yahoo either way, because EDGAR "
+    "carries no price, market cap or beta.",
+)
 def snapshot(
     ticker: str | None,
     tickers: str | None,
@@ -848,6 +857,7 @@ def snapshot(
     delay: float,
     force: bool,
     offline_dir: str,
+    source: str,
 ) -> None:
     """Fetch live data and write it as committed offline fixtures.
 
@@ -892,7 +902,7 @@ def snapshot(
         # A half-fetched set is worse than a short one: the gaps are invisible later.
         for attempt in (1, 2):
             try:
-                path = snapshot_ticker(name, offline_dir)
+                path = snapshot_ticker(name, offline_dir, source)
                 click.secho(f"  wrote {path}", fg="green")
                 written.append(name)
                 break

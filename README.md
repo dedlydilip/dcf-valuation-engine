@@ -211,7 +211,7 @@ Manifests contain generation time, code/data/configuration hashes, fiscal period
 
 ## Verification
 
-**385 tests, no network required.** Including a golden case worked out by hand so a
+**415 tests, no network required.** Including a golden case worked out by hand so a
 refactor cannot silently move the valuation:
 
 ```
@@ -498,6 +498,53 @@ there is expected, not a bug. `src/fetcher/rates.py` fetches `^TNX` (the 10-year
 yield) exactly the way `src/fetcher/fx.py` fetches a spot rate, and is silent about
 anything but the risk-free assumption — cost of debt, ERP and every other WACC input are
 untouched.
+
+### Statements can come from the filings instead of from Yahoo
+
+`yfinance` is an unofficial scrape of Yahoo's *aggregated* figures, and the aggregation is
+where the damage happens — the EBIT defect above is Yahoo publishing its own adjusted
+operating income alongside the filed one. SEC EDGAR carries the XBRL facts as tagged in
+the filing itself.
+
+```bash
+python run.py snapshot --ticker PG --source edgar
+```
+
+The statements come from the company's 10-K or 20-F; **`info.json` still comes from
+Yahoo, because EDGAR carries no market data at all** — no price, no market capitalisation,
+no beta. The flag is a hybrid by necessity, and `manifest.json` records which half came
+from where, plus the CIK, the taxonomy chosen, the accession number, and the XBRL tag
+behind every single field, so any number can be traced back to the filing by hand.
+
+Four things about EDGAR that would silently produce wrong data if taken at face value,
+each found against the live API and each guarded by a test:
+
+- **Foreign filers carry both taxonomies, and the US GAAP one is frozen.** Honda's
+  `us-gaap:OperatingIncomeLoss` stops at 2014-03-31 and Toyota's at 2020-03-31; both
+  migrated to IFRS. The taxonomy is chosen by which one has the more recent revenue fact,
+  never by a hardcoded preference.
+- **Every period appears several times.** Each filing restates prior-year comparatives, so
+  Honda's FY2023 revenue appears under three different `fy` values. The most recently
+  filed version wins.
+- **`total_debt` has no single US GAAP tag.** Apple's is `LongTermDebtNoncurrent` +
+  `LongTermDebtCurrent` + `CommercialPaper`. Absent components stay absent rather than
+  becoming a zero, because a zero reads downstream as a debt-free company.
+- **Filers migrate between tags.** P&G stopped tagging
+  `CashAndCashEquivalentsAtCarryingValue`, so taking the first candidate with any data
+  returned cash from an earlier fiscal year as current — 4,239m against the 9,942m on the
+  FY2026 balance sheet. Candidates now merge per period, not per tag.
+
+`python tools/reconcile_edgar.py AAPL MSFT PG` prints a field-by-field comparison of the
+two providers. Apple reconciles to **0.00% across four fiscal years and twelve fields**.
+Two differences are known and explained rather than absorbed: Yahoo's `total_debt`
+includes capitalised leases in FY2022 and excludes them in FY2023–25, and EDGAR lags Yahoo
+for foreign filers — Honda's latest 20-F fact is FY2025 while Yahoo already carries FY2026.
+
+**What it does not fix.** Cost of debt is not in XBRL — the coupon detail lives in the
+debt footnote's prose, so the book-yield proxy survives untouched. Neither is beta, price
+or market cap. And coverage stops at SEC registrants: companies trading as unsponsored
+depositary receipts — Tencent, SK Hynix — file nothing, and the CIK lookup says so rather
+than guessing.
 
 ---
 
